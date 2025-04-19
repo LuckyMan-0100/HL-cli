@@ -1,0 +1,1 @@
+# Intentionally empty – allows `python -m pytest` discovery under config.tests

@@ -1,223 +1,380 @@
+"""Backpack WS client – maintains in‑RAM order‑book, trades, 1‑min candles."""
 import asyncio
 import json
 import logging
-from typing import Dict, Optional, Set
 import websockets
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timezone
+from typing import Deque, Dict, List, Any, Set
 from decimal import Decimal
+import asyncpg
+import hmac
+import hashlib
 import time
-
 from config.settings import settings
-from .models import Trade, OrderBook, Kline
-from .db_writer import PostgresWriter
-from .memory_store import KlineMemoryStore, OrderBookMemoryStore, TradeBuffer
+from .models import OrderBook, OrderBookLevel, Kline, Trade
+from .memory_store import OrderBookMemoryStore, KlineMemoryStore
 
 logger = logging.getLogger(__name__)
 
 class BackpackWebSocketClient:
     """WebSocket client for Backpack Exchange."""
-
-    def __init__(
-        self,
-        symbol: str = settings.trading.symbol,
-        kline_intervals: Set[str] = {"1m"},  # Default to 1-minute klines
-        write_to_db: bool = True
-    ):
+    def __init__(self, symbol: str, kline_intervals: Set[str] = {"1m"}, write_to_db: bool = True):
         self.symbol = symbol
-        self.ws_url = str(settings.ws_url)
         self.kline_intervals = kline_intervals
         self.write_to_db = write_to_db
-
-        # Initialize stores
-        self.kline_store = KlineMemoryStore()
-        self.orderbook_store = OrderBookMemoryStore()
-        self.trade_buffer = TradeBuffer()
+        self.ws_url = settings.ws_url
         
-        if write_to_db:
-            self.db_writer = PostgresWriter()
-        else:
-            self.db_writer = None
-
-        # WebSocket connection
-        self.ws = None
+        # Initialize memory stores
+        self.orderbook_store = OrderBookMemoryStore()
+        self.kline_store = KlineMemoryStore()
+        self.trade_buffer = deque(maxlen=settings.trading.trade_memory_rows)
+        
+        # State tracking
+        self.last_sequence_id = 0
+        self.orderbook_initialized = False
         self.connected = False
-        self.last_update_id = 0  # For order book sync
+        self.subscribed_channels = set()
+        
+        # Database connection
+        self.db_pool = None
+        
+        # API credentials
+        self.api_key = settings.backpack_api_key.get_secret_value()
+        self.api_secret = settings.backpack_api_secret.get_secret_value()
 
-    async def connect(self):
-        """Establish WebSocket connection."""
+    def _generate_signature(self, timestamp: int, window: int = 5000) -> str:
+        """Generate signature for authentication."""
+        message = f"{timestamp}{window}"
+        signature = hmac.new(
+            self.api_secret.encode(),
+            message.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        return signature
+
+    async def _authenticate(self, ws):
+        """Authenticate WebSocket connection."""
         try:
-            self.ws = await websockets.connect(self.ws_url)
-            self.connected = True
-            logger.info(f"Connected to {self.ws_url}")
+            timestamp = int(time.time() * 1000)
+            window = 5000  # 5 seconds validity
+            signature = self._generate_signature(timestamp, window)
             
-            # Subscribe to channels
-            await self._subscribe()
+            auth_payload = {
+                "op": "auth",
+                "key": self.api_key,
+                "timestamp": timestamp,
+                "window": window,
+                "signature": signature
+            }
+            
+            await ws.send(json.dumps(auth_payload))
+            logger.info("Authentication request sent")
+            
+            # Wait for auth response
+            response = await ws.recv()
+            auth_response = json.loads(response)
+            
+            if auth_response.get("type") == "error":
+                logger.error(f"Authentication failed: {auth_response.get('message')}")
+                raise Exception("Authentication failed")
+                
+            if auth_response.get("type") == "authenticated":
+                logger.info("Successfully authenticated")
+                return True
+                
+            logger.error(f"Unexpected authentication response: {auth_response}")
+            return False
+            
         except Exception as e:
-            logger.error(f"Connection failed: {e}", exc_info=True)
-            self.connected = False
+            logger.error(f"Authentication error: {e}")
             raise
 
-    async def _subscribe(self):
-        """Subscribe to relevant WebSocket channels."""
-        subscriptions = [
-            {"op": "subscribe", "channel": f"trades.{self.symbol}"},
-            {"op": "subscribe", "channel": f"depth.{self.symbol}"}
-        ]
-        
-        for interval in self.kline_intervals:
-            subscriptions.append({
-                "op": "subscribe",
-                "channel": f"kline.{self.symbol}.{interval}"
-            })
+    async def _init_db_connection(self):
+        """Initialize database connection."""
+        try:
+            self.db_pool = await asyncpg.create_pool(
+                host=settings.db_host,
+                port=settings.db_port,
+                database=settings.db_name,
+                user=settings.db_user,
+                password=settings.db_password
+            )
+            logger.info("Database connection pool established")
+        except Exception as e:
+            logger.error(f"Failed to connect to database: {e}")
+            raise
 
-        for sub in subscriptions:
-            await self.ws.send(json.dumps(sub))
-            logger.info(f"Subscribed to {sub['channel']}")
-
-    def _parse_trade(self, data: Dict) -> Trade:
-        """Parse trade data from WebSocket message."""
-        return Trade(
-            symbol=self.symbol,
-            trade_id=str(data['id']),
-            price=Decimal(str(data['price'])),
-            quantity=Decimal(str(data['quantity'])),
-            side=data['side'].lower(),
-            timestamp=datetime.fromtimestamp(data['timestamp'] / 1000),
-            is_liquidation=data.get('liquidation', False)
-        )
-
-    def _parse_orderbook(self, data: Dict) -> OrderBook:
-        """Parse order book data from WebSocket message."""
-        bids = {Decimal(str(price)): Decimal(str(qty)) 
-               for price, qty in data['bids']}
-        asks = {Decimal(str(price)): Decimal(str(qty)) 
-               for price, qty in data['asks']}
-        
-        return OrderBook(
-            symbol=self.symbol,
-            timestamp=datetime.fromtimestamp(data['timestamp'] / 1000),
-            bids=bids,
-            asks=asks,
-            last_update_id=data['lastUpdateId']
-        )
-
-    def _parse_kline(self, data: Dict) -> Kline:
-        """Parse kline data from WebSocket message."""
-        return Kline(
-            symbol=self.symbol,
-            timestamp=datetime.fromtimestamp(data['timestamp'] / 1000),
-            interval=data['interval'],
-            open=Decimal(str(data['open'])),
-            high=Decimal(str(data['high'])),
-            low=Decimal(str(data['low'])),
-            close=Decimal(str(data['close'])),
-            volume=Decimal(str(data['volume'])),
-            trade_count=data['trades'],
-            closed=data['closed']
-        )
-
-    async def _handle_trade(self, data: Dict):
-        """Handle incoming trade message."""
-        trade = self._parse_trade(data)
-        
-        # Add to buffer, check if should flush
-        if self.trade_buffer.add_trade(trade):
-            trades = self.trade_buffer.get_trades()
-            if self.write_to_db:
-                try:
-                    self.db_writer.write_trades(trades)
-                except Exception as e:
-                    logger.error(f"Failed to write trades: {e}", exc_info=True)
-
-    async def _handle_orderbook(self, data: Dict):
-        """Handle incoming order book message."""
-        orderbook = self._parse_orderbook(data)
-        
-        # Only process if update ID is newer
-        if orderbook.last_update_id <= self.last_update_id:
-            return
-            
-        self.last_update_id = orderbook.last_update_id
-        self.orderbook_store.update_order_book(orderbook)
-        
-        if self.write_to_db:
-            try:
-                self.db_writer.write_orderbook(orderbook)
-            except Exception as e:
-                logger.error(f"Failed to write orderbook: {e}", exc_info=True)
-
-    async def _handle_kline(self, data: Dict):
-        """Handle incoming kline message."""
-        kline = self._parse_kline(data)
-        self.kline_store.add_kline(kline)
-        
-        if self.write_to_db and kline.closed:
-            try:
-                self.db_writer.write_kline(kline)
-            except Exception as e:
-                logger.error(f"Failed to write kline: {e}", exc_info=True)
-
-    async def process_messages(self):
-        """Main message processing loop."""
+    async def _connect_websocket(self):
+        """Connect to WebSocket with retries."""
         while True:
             try:
-                if not self.connected:
-                    await self.connect()
-
-                message = await self.ws.recv()
-                data = json.loads(message)
-                
-                channel = data.get('channel', '')
-                
-                if channel.startswith('trades'):
-                    await self._handle_trade(data)
-                elif channel.startswith('depth'):
-                    await self._handle_orderbook(data)
-                elif channel.startswith('kline'):
-                    await self._handle_kline(data)
-                else:
-                    logger.warning(f"Unknown message type: {message}")
-
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("WebSocket connection closed. Reconnecting...")
-                self.connected = False
-                await asyncio.sleep(1)  # Wait before reconnecting
+                async with websockets.connect(self.ws_url) as ws:
+                    logger.info(f"Connected to WebSocket at {self.ws_url}")
+                    self.connected = True
+                    return ws
             except Exception as e:
-                logger.error(f"Error processing message: {e}", exc_info=True)
-                await asyncio.sleep(1)
+                logger.error(f"Failed to connect to WebSocket: {e}")
+                await asyncio.sleep(5)
+
+    async def _subscribe_channels(self, ws):
+        """Subscribe to required channels."""
+        try:
+            # Subscribe to orderbook
+            await ws.send(json.dumps({
+                "type": "subscribe",
+                "channel": "orderbook",
+                "symbol": self.symbol
+            }))
+            self.subscribed_channels.add("orderbook")
+            logger.info(f"Subscribed to orderbook for {self.symbol}")
+
+            # Subscribe to trades
+            await ws.send(json.dumps({
+                "type": "subscribe",
+                "channel": "trades",
+                "symbol": self.symbol
+            }))
+            self.subscribed_channels.add("trades")
+            logger.info(f"Subscribed to trades for {self.symbol}")
+
+            # Subscribe to klines for each interval
+            for interval in self.kline_intervals:
+                await ws.send(json.dumps({
+                    "type": "subscribe",
+                    "channel": f"kline_{interval}",
+                    "symbol": self.symbol
+                }))
+                self.subscribed_channels.add(f"kline_{interval}")
+                logger.info(f"Subscribed to {interval} klines for {self.symbol}")
+
+            # Request initial order book snapshot
+            await ws.send(json.dumps({
+                "type": "request",
+                "channel": "orderbook",
+                "symbol": self.symbol
+            }))
+
+        except Exception as e:
+            logger.error(f"Failed to subscribe to channels: {e}")
+            raise
+
+    async def _handle_orderbook(self, data: dict):
+        """Process orderbook updates."""
+        try:
+            # Verify sequence continuity
+            if not self.orderbook_initialized:
+                if data.get("type") != "snapshot":
+                    logger.warning("Waiting for initial orderbook snapshot")
+                    return
+                self.orderbook_initialized = True
+                self.last_sequence_id = data["lastUpdateId"]
+            else:
+                if data.get("type") == "snapshot":
+                    # Reset state for new snapshot
+                    self.orderbook_initialized = True
+                    self.last_sequence_id = data["lastUpdateId"]
+                elif data["lastUpdateId"] <= self.last_sequence_id:
+                    logger.warning(f"Skipping old orderbook update {data['lastUpdateId']}")
+                    return
+                elif data["lastUpdateId"] > self.last_sequence_id + 1:
+                    logger.error(f"Gap in orderbook sequence, requesting new snapshot")
+                    self.orderbook_initialized = False
+                    return
+
+            # Convert raw data to OrderBook model
+            bids = {Decimal(str(price)): Decimal(str(qty)) for price, qty in data["bids"]}
+            asks = {Decimal(str(price)): Decimal(str(qty)) for price, qty in data["asks"]}
+            
+            orderbook = OrderBook(
+                symbol=self.symbol,
+                timestamp=datetime.fromtimestamp(data["timestamp"] / 1000, tz=timezone.utc),
+                bids=bids,
+                asks=asks,
+                last_update_id=data["lastUpdateId"]
+            )
+            
+            # Update memory store
+            self.orderbook_store.update(orderbook)
+            
+            # Write to database if enabled
+            if self.write_to_db:
+                await self._write_orderbook_to_db(orderbook)
+                
+        except Exception as e:
+            logger.error(f"Error processing orderbook: {e}")
+
+    async def _handle_trade(self, data: dict):
+        """Process trade updates."""
+        try:
+            trade = Trade(
+                symbol=self.symbol,
+                price=Decimal(str(data["price"])),
+                quantity=Decimal(str(data["quantity"])),
+                timestamp=datetime.fromtimestamp(data["timestamp"] / 1000, tz=timezone.utc),
+                side=data["side"],
+                trade_id=str(data["tradeId"]),
+                is_liquidation=data.get("liquidation", False)
+            )
+            
+            # Update trade buffer
+            self.trade_buffer.append(trade)
+            
+            # Write to database if enabled
+            if self.write_to_db:
+                await self._write_trade_to_db(trade)
+                
+        except Exception as e:
+            logger.error(f"Error processing trade: {e}")
+
+    async def _handle_kline(self, data: dict):
+        """Process kline updates."""
+        try:
+            kline = Kline(
+                symbol=self.symbol,
+                timestamp=datetime.fromtimestamp(data["timestamp"] / 1000, tz=timezone.utc),
+                interval=data["interval"],
+                open=Decimal(str(data["open"])),
+                high=Decimal(str(data["high"])),
+                low=Decimal(str(data["low"])),
+                close=Decimal(str(data["close"])),
+                volume=Decimal(str(data["volume"])),
+                trade_count=data["tradeCount"],
+                closed=data["closed"]
+            )
+            
+            # Update memory store
+            self.kline_store.update(kline)
+            
+            # Write to database if enabled
+            if self.write_to_db:
+                await self._write_kline_to_db(kline)
+                
+        except Exception as e:
+            logger.error(f"Error processing kline: {e}")
+
+    async def _write_orderbook_to_db(self, orderbook: OrderBook):
+        """Write orderbook snapshot to database."""
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO orderbook_snapshots (
+                        symbol, timestamp, last_update_id, bids, asks, created_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6
+                    )
+                """, 
+                    orderbook.symbol,
+                    orderbook.timestamp,
+                    orderbook.last_update_id,
+                    json.dumps({str(k): str(v) for k, v in orderbook.bids.items()}),
+                    json.dumps({str(k): str(v) for k, v in orderbook.asks.items()}),
+                    datetime.now(timezone.utc)
+                )
+        except Exception as e:
+            logger.error(f"Failed to write orderbook to database: {e}")
+
+    async def _write_kline_to_db(self, kline: Kline):
+        """Write kline to database."""
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO klines (
+                        symbol, timestamp, interval, open, high, low, close,
+                        volume, trade_count, closed, created_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                    )
+                """,
+                    kline.symbol,
+                    kline.timestamp,
+                    kline.interval,
+                    str(kline.open),
+                    str(kline.high),
+                    str(kline.low),
+                    str(kline.close),
+                    str(kline.volume),
+                    kline.trade_count,
+                    kline.closed,
+                    datetime.now(timezone.utc)
+                )
+        except Exception as e:
+            logger.error(f"Failed to write kline to database: {e}")
+
+    async def _write_trade_to_db(self, trade: Trade):
+        """Write trade to database."""
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO trades (
+                        symbol, timestamp, price, quantity, side,
+                        trade_id, is_liquidation, created_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8
+                    )
+                """,
+                    trade.symbol,
+                    trade.timestamp,
+                    str(trade.price),
+                    str(trade.quantity),
+                    trade.side,
+                    trade.trade_id,
+                    trade.is_liquidation,
+                    datetime.now(timezone.utc)
+                )
+        except Exception as e:
+            logger.error(f"Failed to write trade to database: {e}")
 
     async def run(self):
         """Run the WebSocket client."""
-        while True:
-            try:
-                await self.process_messages()
-            except Exception as e:
-                logger.error(f"Fatal error: {e}", exc_info=True)
-                if self.ws:
-                    await self.ws.close()
-                await asyncio.sleep(5)  # Wait before restarting
+        try:
+            if self.write_to_db:
+                await self._init_db_connection()
+            
+            logger.info(f"Starting WebSocket client for {self.symbol}")
+            
+            while True:
+                try:
+                    ws = await self._connect_websocket()
+                    
+                    # Authenticate first
+                    await self._authenticate(ws)
+                    
+                    # Then subscribe to channels
+                    await self._subscribe_channels(ws)
+                    
+                    async for msg in ws:
+                        try:
+                            data = json.loads(msg)
+                            channel = data.get("channel")
+                            
+                            if channel == "orderbook":
+                                await self._handle_orderbook(data)
+                            elif channel and channel.startswith("kline_"):
+                                await self._handle_kline(data)
+                            elif channel == "trades":
+                                await self._handle_trade(data)
+                                
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to decode message: {e}")
+                        except Exception as e:
+                            logger.error(f"Error processing message: {e}")
+                            
+                except websockets.exceptions.ConnectionClosed:
+                    logger.warning("WebSocket connection closed, reconnecting...")
+                    self.connected = False
+                    self.orderbook_initialized = False  # Reset orderbook state
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    logger.error(f"WebSocket error: {e}")
+                    self.connected = False
+                    self.orderbook_initialized = False  # Reset orderbook state
+                    await asyncio.sleep(5)
+                    
+        except Exception as e:
+            logger.error(f"Fatal error in WebSocket client: {e}")
+            raise
 
     def close(self):
-        """Clean up resources."""
-        if self.db_writer:
-            self.db_writer.close()
-
-async def main():
-    """Entry point for running the WebSocket client."""
-    client = BackpackWebSocketClient()
-    try:
-        await client.run()
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-    finally:
-        client.close()
-
-if __name__ == "__main__":
-    # Set up logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    # Run the client
-    asyncio.run(main()) 
+        """Close the WebSocket client."""
+        self.connected = False

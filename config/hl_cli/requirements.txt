@@ -1,0 +1,14 @@
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+xgboost>=2.0
+lightgbm>=4.3
+ta
+websockets>=11.0
+psycopg[binary]
+SQLAlchemy>=2.0
+pyyaml
+pybind11
+stable-baselines3
+joblib
+python-dotenv

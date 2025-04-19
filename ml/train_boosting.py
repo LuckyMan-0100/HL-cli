@@ -149,7 +149,7 @@ def train_model(
     y: pd.Series,
     n_trials: int = 100,
     random_state: int = 42
-) -> Tuple[LGBMClassifier, dict]:
+) -> Tuple[LGBMClassifier, StandardScaler, dict]:
     """
     Train and optimize the model.
     
@@ -215,7 +215,7 @@ def train_model(
         'best_params': best_params
     }
     
-    return model, metrics
+    return model, scaler, metrics
 
 def save_model(
     model: LGBMClassifier,
@@ -267,10 +267,10 @@ def main():
         logger.info(f"Label distribution:\n{label_stats}")
         
         # Train model
-        model, metrics = train_model(X, y)
+        model, scaler, metrics = train_model(X, y)
         
         # Save artifacts
-        save_model(model, metrics)
+        save_model(model, scaler, metrics)
         
         logger.info("Training completed successfully")
         

@@ -1,0 +1,11 @@
+model:
+  min_confidence: 0.60
+  retrain_days: 14
+strategy:
+  leverage_min: 10
+  leverage_max: 100
+  tp_bps: 6        # 0.06 %
+  sl_bps: 4        # 0.04 %
+risk:
+  max_drawdown_pct: 0.2
+  notional_target: 1000000
