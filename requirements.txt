@@ -1,0 +1,19 @@
+websockets
+asyncio
+psycopg2-binary  # Or asyncpg if preferred
+pandas
+numpy
+ta-lib         # Requires C library installation (or use pandas-ta)
+scikit-learn
+xgboost
+lightgbm
+joblib
+gymnasium       # For RL environment
+stable-baselines3[extra] # Includes extras like Optuna
+pybind11       # For C++ bindings (install via pip, but used during build)
+requests
+python-dotenv
+pydantic
+apache-airflow  # For orchestration (consider version)
+docker          # For deployment DAG
+boto3           # For S3 interaction in DAGs 
