@@ -71,7 +71,11 @@ export CMAKE_PREFIX_PATH="$(brew --prefix openssl);$(brew --prefix curl);$(brew 
 Install Python requirements:
 ```bash
 pip install -r requirements.txt
-# Ensure requirements.txt includes: pandas, numpy, psycopg2-binary, pyarrow, python-dotenv, pytest (for tests), talib-binary (if used)
+# Core requirements include:
+# - pandas, numpy, psycopg2-binary, pyarrow, python-dotenv, pytest
+# - cryptography (for ED25519 signing)
+# - websockets (for WebSocket connections)
+# - talib-binary (if used)
 ```
 
 ## Configuration
@@ -83,8 +87,31 @@ pip install -r requirements.txt
 2.  Edit `.env` and fill in your credentials and settings:
     *   `REDIS_HOST`, `REDIS_PORT`
     *   `PG_HOST`, `PG_PORT`, `PG_DBNAME`, `PG_USER`, `PG_PASSWORD`
-    *   `BACKPACK_API_KEY`, `BACKPACK_API_SECRET` (for `exec_bridge`)
+    *   `BACKPACK_API_KEY`, `BACKPACK_API_SECRET` (Base64-encoded ED25519 private key)
     *   `TRADING_SYMBOL` (e.g., `SOL_USDC_PERP`)
+
+### WebSocket Authentication
+
+The WebSocket client uses ED25519 signatures for authentication with Backpack Exchange:
+
+1. The API secret should be a Base64-encoded ED25519 private key
+2. Authentication flow:
+   - Generate timestamp (milliseconds) and window (5000ms)
+   - Create message string: `timestamp + window`
+   - Sign message using ED25519 private key
+   - Base64 encode the signature
+   - Send authentication payload with API key, timestamp, window, and signature
+
+Example authentication payload:
+```json
+{
+    "op": "auth",
+    "key": "your-api-key",
+    "timestamp": 1698898000000,
+    "window": 5000,
+    "signature": "base64-encoded-ed25519-signature"
+}
+```
 
 ## Building C++ Components
 

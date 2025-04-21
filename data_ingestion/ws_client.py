@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from typing import Deque, Dict, List, Any, Set
 from decimal import Decimal
 import asyncpg
-import hmac
-import hashlib
+import base64
 import time
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 from config.settings import settings
 from .models import OrderBook, OrderBookLevel, Kline, Trade
 from .memory_store import OrderBookMemoryStore, KlineMemoryStore
@@ -42,16 +43,26 @@ class BackpackWebSocketClient:
         # API credentials
         self.api_key = settings.backpack_api_key.get_secret_value()
         self.api_secret = settings.backpack_api_secret.get_secret_value()
+        
+        # Load ED25519 private key
+        try:
+            private_key_bytes = base64.b64decode(self.api_secret)
+            self.private_key = ed25519.Ed25519PrivateKey.from_private_bytes(private_key_bytes)
+        except Exception as e:
+            logger.error(f"Failed to load ED25519 private key: {e}")
+            raise
 
     def _generate_signature(self, timestamp: int, window: int = 5000) -> str:
-        """Generate signature for authentication."""
+        """Generate ED25519 signature for authentication."""
         message = f"{timestamp}{window}"
-        signature = hmac.new(
-            self.api_secret.encode(),
-            message.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        return signature
+        try:
+            # Sign the message using ED25519
+            signature = self.private_key.sign(message.encode())
+            # Return base64 encoded signature
+            return base64.b64encode(signature).decode()
+        except Exception as e:
+            logger.error(f"Failed to generate signature: {e}")
+            raise
 
     async def _authenticate(self, ws):
         """Authenticate WebSocket connection."""

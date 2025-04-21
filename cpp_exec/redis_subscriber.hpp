@@ -1,38 +1,35 @@
-#ifndef CPP_EXEC_REDIS_SUBSCRIBER_HPP
-#define CPP_EXEC_REDIS_SUBSCRIBER_HPP
+#pragma once
 
-#include <atomic>
-#include <thread>
 #include <string>
-
-// Forward declare ExecutionClient to avoid circular dependency
-namespace bp {
-    class ExecutionClient; 
-}
+#include <memory>
+#include <atomic>
+#include <sw/redis++/redis++.h>
+#include "exec_bridge.hpp"
 
 namespace bp {
 
 class RedisSubscriber {
 public:
-    // Constructor takes a reference to the ExecutionClient it will notify
-    RedisSubscriber(ExecutionClient& exec_client);
-    ~RedisSubscriber(); // Destructor to manage thread
+    explicit RedisSubscriber(ExecutionClient& exec_client);
+    ~RedisSubscriber();
 
-    // Start the subscriber thread
+    // Disable copy/move
+    RedisSubscriber(const RedisSubscriber&) = delete;
+    RedisSubscriber& operator=(const RedisSubscriber&) = delete;
+    RedisSubscriber(RedisSubscriber&&) = delete;
+    RedisSubscriber& operator=(RedisSubscriber&&) = delete;
+
     void start();
-
-    // Stop the subscriber thread
     void stop();
 
 private:
-    // The main loop executed by the subscriber thread
-    void run();
+    void handleBookTickerMessage(const std::string& msg);
+    void handleTradeMessage(const std::string& msg);
+    void handleKlineMessage(const std::string& msg);
 
-    ExecutionClient& exec_client_; // Reference to the client to call onTick
-    std::atomic<bool> running_;    // Flag to control the subscriber loop
-    std::thread subscriber_thread_; // The thread running the Redis subscription loop
+    ExecutionClient& exec_client_;
+    std::unique_ptr<sw::redis::Subscriber> subscriber_;
+    std::atomic<bool> running_{false};
 };
 
-} // namespace bp
-
-#endif // CPP_EXEC_REDIS_SUBSCRIBER_HPP 
+} // namespace bp 
