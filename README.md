@@ -1,17 +1,173 @@
 # PPO Trading Agent Training
 
-This repository contains a training script for a PPO (Proximal Policy Optimization) agent designed for trading in financial markets.
+This repository contains a training script for a PPO (Proximal Policy Optimization) agent designed for trading in financial markets, along with components for data ingestion and order execution.
 
-## Setup
+## Project Structure (Overview)
 
-1. Install dependencies:
-```bash
-pip install -r requirements.txt
+```
+.
+├── cpp_exec/                 # C++ Order Execution Bridge (L1 Consumer)
+│   ├── exec_bridge.cpp
+│   ├── exec_bridge.hpp
+│   ├── redis_subscriber.cpp
+│   ├── redis_subscriber.hpp
+│   ├── tests/                  # C++ Unit/Integration Tests
+│   │   └── exec_bridge_latency_test.cpp
+│   └── CMakeLists.txt          # Build file for exec_bridge
+├── data_ingestion/           # Data Collection & Processing
+│   ├── backpack_data_service.cpp # Collects L1/L2 from Backpack WS
+│   ├── pg_tail.py              # Tails Postgres for L2 data
+│   └── tests/                  # Python Unit/Integration Tests
+│       └── pg_tail_integration_test.py
+├── feature_engineering/      # Feature Calculation (L2 Consumer)
+│   └── calculator.py         # Reads L2 from pg_tail, calculates features
+├── ml/                       # Machine Learning Models
+├── rl/                       # Reinforcement Learning Components (Existing)
+│   ├── train.py
+│   ├── env.py
+│   ├── agent.py
+│   ├── memory.py
+│   └── risk.py
+├── config/                   # Configuration files
+├── models/                   # Saved ML/RL models
+├── logs/                     # Logs
+├── .env.example              # Environment variable template
+├── requirements.txt          # Python dependencies
+└── README.md                 # This file
 ```
 
-2. Ensure you have the trading environment and agent components set up in your project structure.
+## System Dependencies
 
-## Training the Agent
+Ensure the following system libraries are installed before building C++ components:
+
+*   **Core:** `cmake`, `gcc` (supporting C++20) or `clang`
+*   **Networking & Crypto:** `openssl` (dev headers), `libcurl` (dev headers)
+*   **Boost:** Libraries (`system`, `thread`) and headers (>= 1.71.0)
+*   **PostgreSQL Client:** `libpq` (dev headers), `libpqxx` (dev headers)
+*   **Redis Client:** `hiredis`, `hiredis-plus-plus` (from source or package manager)
+*   **JSON:** `nlohmann-json` (header-only, often included via package manager)
+*   **Testing (Optional):** `googletest` (dev headers/library)
+
+**Example (Ubuntu/Debian):**
+```bash
+sudo apt update
+sudo apt install build-essential cmake pkg-config libssl-dev libcurl4-openssl-dev \
+                 libboost-system-dev libboost-thread-dev libpq-dev libpqxx-dev \
+                 libhiredis-dev nlohmann-json3-dev libgoogle-test-dev
+# Install hiredis-plus-plus (check their repo for latest instructions)
+# Example: git clone https://github.com/sewenew/redis-plus-plus.git && cd redis-plus-plus && mkdir build && cd build && cmake .. && make && sudo make install
+```
+
+**Example (macOS with Homebrew):**
+```bash
+brew update
+brew install cmake openssl curl boost libpq libpqxx hiredis nlohmann-json googletest redis-plus-plus
+# Ensure CMake can find brewed packages (might need to set CMAKE_PREFIX_PATH)
+export CMAKE_PREFIX_PATH="$(brew --prefix openssl);$(brew --prefix curl);$(brew --prefix boost);$(brew --prefix libpq);$(brew --prefix hiredis);$(brew --prefix nlohmann-json);$(brew --prefix redis-plus-plus)"
+```
+
+## Python Dependencies
+
+Install Python requirements:
+```bash
+pip install -r requirements.txt
+# Ensure requirements.txt includes: pandas, numpy, psycopg2-binary, pyarrow, python-dotenv, pytest (for tests), talib-binary (if used)
+```
+
+## Configuration
+
+1.  Copy the environment variable template:
+    ```bash
+    cp .env.example .env
+    ```
+2.  Edit `.env` and fill in your credentials and settings:
+    *   `REDIS_HOST`, `REDIS_PORT`
+    *   `PG_HOST`, `PG_PORT`, `PG_DBNAME`, `PG_USER`, `PG_PASSWORD`
+    *   `BACKPACK_API_KEY`, `BACKPACK_API_SECRET` (for `exec_bridge`)
+    *   `TRADING_SYMBOL` (e.g., `SOL_USDC_PERP`)
+
+## Building C++ Components
+
+1.  **Execution Bridge (`exec_bridge`):**
+    ```bash
+    cd cpp_exec
+    mkdir -p build
+    cd build
+    cmake ..
+    make -j$(nproc) # Adjust -j based on your CPU cores
+    cd ../.. 
+    # Executable will be at cpp_exec/build/exec_bridge
+    ```
+    *Note: If CMake fails to find dependencies (Boost, Redis++, etc.), you may need to provide hints via `CMAKE_PREFIX_PATH` or install them to standard locations.*
+
+2.  **Data Service (`backpack_data_service`):**
+    *This service is currently built using a direct g++ command (see comment in the source file).* 
+    ```bash
+    cd data_ingestion
+    # Ensure dependencies listed in the source file comment are installed
+    # Example build command (adjust paths/flags as needed for your system):
+    g++ -std=c++20 -O2 backpack_data_service.cpp -o backpack_data_service \
+           -lswresample -lavformat -lavcodec -lavutil -lcurl -lssl -lcrypto -lpqxx -lpq \
+           -lboost_system -lpthread -lhiredis++ -lhiredis \
+           -I/usr/local/include -I/opt/homebrew/include `# Add include paths` \
+           -L/usr/local/lib -L/opt/homebrew/lib `# Add library paths`
+    cd ..
+    # Executable will be at data_ingestion/backpack_data_service
+    ```
+
+## Running the System
+
+Ensure Redis and PostgreSQL are running and accessible with the credentials in `.env`.
+
+1.  **Start Data Ingestion (L1 to Redis, L2 to Postgres):**
+    ```bash
+    # Terminal 1: Start the data service
+    ./data_ingestion/backpack_data_service
+    ```
+
+2.  **Start Execution Bridge (Consumes L1 from Redis):**
+    ```bash
+    # Terminal 2: Start the execution bridge
+    ./cpp_exec/build/exec_bridge 
+    ```
+
+3.  **Start Feature Engineering (Consumes L2 from Postgres):**
+    ```bash
+    # Terminal 3: Start the feature calculator
+    python feature_engineering/calculator.py
+    # Features will be appended to /tmp/features.parquet
+    ```
+
+## Running Tests
+
+1.  **C++ Tests (exec_bridge latency):**
+    *Requires `googletest`.*
+    ```bash
+    # Assuming you built in cpp_exec/build
+    cd cpp_exec/build 
+    # You might need to add the test target to CMakeLists.txt if not already done
+    # Example CMake addition:
+    # enable_testing()
+    # find_package(GTest REQUIRED)
+    # add_executable(exec_bridge_test tests/exec_bridge_latency_test.cpp)
+    # target_link_libraries(exec_bridge_test PRIVATE GTest::gtest GTest::gtest_main exec_bridge)
+    # add_test(NAME ExecBridgeLatencyTest COMMAND exec_bridge_test)
+    
+    # After adding test target and rebuilding:
+    ctest --verbose
+    # Or run directly:
+    # ./exec_bridge_test 
+    cd ../..
+    ```
+
+2.  **Python Tests (pg_tail integration):**
+    *Requires `pytest` and a running/configured PostgreSQL.*
+    ```bash
+    # Ensure .env is configured for the test database
+    pytest data_ingestion/tests/pg_tail_integration_test.py -v -s
+    ```
+
+## Existing RL Training
 
 The training script (`rl/train.py`) provides a comprehensive implementation for training a PPO agent. Key features include:
 
@@ -58,22 +214,6 @@ train(
 - `save_freq`: Frequency of model checkpointing
 - `save_path`: Directory to save model checkpoints
 - `log_path`: Directory to save training logs
-
-## Project Structure
-
-```
-.
-├── rl/
-│   ├── train.py       # Training script
-│   ├── env.py         # Trading environment
-│   ├── agent.py       # PPO agent implementation
-│   ├── memory.py      # Memory store
-│   └── risk.py        # Risk manager
-├── models/            # Saved model checkpoints
-├── logs/             # Training logs
-├── requirements.txt   # Project dependencies
-└── README.md         # This file
-```
 
 ## Monitoring Training
 
