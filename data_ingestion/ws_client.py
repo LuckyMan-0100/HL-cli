@@ -12,7 +12,7 @@ import base64
 import time
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
-from config.settings import settings
+from .settings import settings
 from .models import OrderBook, OrderBookLevel, Kline, Trade
 from .memory_store import OrderBookMemoryStore, KlineMemoryStore
 
@@ -24,7 +24,7 @@ class BackpackWebSocketClient:
         self.symbol = symbol
         self.kline_intervals = kline_intervals
         self.write_to_db = write_to_db
-        self.ws_url = settings.ws_url
+        self.ws_url = settings.ws.url
         
         # Initialize memory stores
         self.orderbook_store = OrderBookMemoryStore()
@@ -41,8 +41,8 @@ class BackpackWebSocketClient:
         self.db_pool = None
         
         # API credentials
-        self.api_key = settings.backpack_api_key.get_secret_value()
-        self.api_secret = settings.backpack_api_secret.get_secret_value()
+        self.api_key = settings.api.backpack_api_key.get_secret_value()
+        self.api_secret = settings.api.backpack_api_secret.get_secret_value()
         
         # Load ED25519 private key
         try:
@@ -105,11 +105,11 @@ class BackpackWebSocketClient:
         """Initialize database connection."""
         try:
             self.db_pool = await asyncpg.create_pool(
-                host=settings.db_host,
-                port=settings.db_port,
-                database=settings.db_name,
-                user=settings.db_user,
-                password=settings.db_password
+                host=settings.db.host,
+                port=settings.db.port,
+                database=settings.db.name,
+                user=settings.db.user,
+                password=settings.db.password
             )
             logger.info("Database connection pool established")
         except Exception as e:

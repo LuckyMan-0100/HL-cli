@@ -1,0 +1,17 @@
+{
+  "accuracy": 0.0,
+  "sharpe_ratio": 0.0,
+  "profit_factor": 0.0,
+  "total_trades": 0,
+  "winning_trades": 0,
+  "losing_trades": 0,
+  "avg_profit": 0.0,
+  "avg_loss": 0.0,
+  "total_profit": 0.0,
+  "total_loss": 0.0,
+  "max_drawdown": 0.0,
+  "avg_latency_ms": 0.014,
+  "p95_latency_ms": 0.014900000000000002,
+  "uptime_minutes": 0.019188633333333333,
+  "recent_trades": []
+}

@@ -1,0 +1,61 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Your rule content
+
+The application should allow us to churn $1 M+ notional from a $100 starting balance in a matter of hours—while capping downside to a handful of basis points per micro‑cycle
+
+To achieve the goal we need:
+
+Average trade size: ~$40-95
+Win rate: >60%
+Average profit per trade: ~5-7 bps
+Average trade duration of ~1-2 seconds including entry/exit
+
+Our goal is to achieve Sharpe ≈ 25 through our system
+
+Total Trades estimate:
+
+Normal Market Conditions: 2,000-3,000 trades per hour
+High Volatility: 4,000-5,000 trades per hour
+Low Volatility: 1,000-1,500 trades per hour
+
+Wire the system so:
+1. `cpp_exec` receives **L1 (bookTicker)** in <80 µs end‑to‑end:
+   - Skip Postgres; deliver via Redis pub‑sub channel `l1:quotes`.
+   - `exec_bridge.cpp` subscribes, keeps a "best bid / best ask" cache and
+     exposes:
+       double bestBid(); double bestAsk(); double mid(); void onTick(...);
+   - When `onTick` fires, if our strategy condition passes, place/cancel
+     orders (include tp/sl) with the SDK.  
+
+2. ML stack consumes **L2 (depth & kline data)**: 
+   - Summary: The ML stack will utilize `/Users/penrose/HL-cli/machine-learning/model.py` as the core alpha-signal generation framework. This model processes kline-like data (OHLCV) to produce trading signals.
+   - Keep current Postgres ingest of `orderbook_snapshots`. (Note: `model.py` currently focuses on kline-derived features. Integrating raw L2 depth from `orderbook_snapshots` for more granular features can be explored as a subsequent step if beneficial.)
+   - The `model.py` will be adapted to ingest kline data from the Postgres `orderbook_snapshots` table (or an aggregated kline table derived from it) to align with the existing data pipeline.
+   - When `onTick` fires, if our strategy condition passes, place/cancel
+     orders (include tp/sl) with the SDK.  
+
+3. Signal execution from ML outputs
+
+   - Summary: Created CLI wrapper `scripts/run_ml_signals.py` to invoke `machine-learning/model.py`'s `run_ml_model` for kline data and print signals.
+   - Added `hl-cli ml-signals` console entry in `setup.py`.
+
+   Done
+
+Wire the outputs of run_ml_model(...) in model.py into your order-placement logic (via exec_bridge.cpp’s SDK).
+Design the interface (e.g. a simple REST/CLI wrapper or in-process call) so your trading engine can fetch fresh ML signals on each tick.
+Build the data ingestion adapter for kline data:
+Add a module that reads from your Postgres orderbook_snapshots (or pre-aggregated kline table) and feeds it into load_and_process_data / add_advanced_features.
+Ensure it’s parametrised by symbol/interval and handles incremental updates.
+Write unit tests and CI checks for your ML stack:
+Test load_price_data, make_xy, train_model, run_ml_model end-to-end on synthetic or snapshot data.
+Validate metrics (Sharpe, edge stats) against known fixtures.
+Expose a run-command or service for the ML component:
+Create a CLI (e.g. hl-cli ml run) or lightweight HTTP endpoint that upstream systems can call in real-time.
+Hook into your dotenv config and ensure model parameters (windows, horizons) are easily overridden.
+Integrate and backtest:
+Backtest the combined L1+L2 strategy end-to-end—measure PnL, drawdowns, latency.
+Iterate on feature windows, hyperparameters and early-stopping to hit your Sharpe target.

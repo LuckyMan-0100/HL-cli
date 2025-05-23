@@ -1,15 +1,13 @@
-"""Data ingestion package."""
+"""
+Data ingestion package for market data handling.
+"""
 
-from .ws_client import BackpackWebSocketClient
 from .memory_store import KlineMemoryStore, OrderBookMemoryStore, TradeBuffer
-from .models import Kline, OrderBook, Trade
+from .ws_client import BackpackWebSocketClient
 
 __all__ = [
-    'BackpackWebSocketClient',
     'KlineMemoryStore',
     'OrderBookMemoryStore',
     'TradeBuffer',
-    'Kline',
-    'OrderBook',
-    'Trade'
+    'BackpackWebSocketClient'
 ] 

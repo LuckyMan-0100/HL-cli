@@ -1,0 +1,50 @@
+[
+{
+  "directory": "/Users/penrose/HL-cli/cpp_exec",
+  "command": "/opt/homebrew/bin/g++-13 -DFMT_SHARED -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/Users/penrose/HL-cli/cpp_exec -I/Users/penrose/HL-cli/cpp_exec/vendor -I/Users/penrose/HL-cli/cpp_exec/include -I/Users/penrose/HL-cli/cpp_exec/../hiredis/include -I/Users/penrose/HL-cli/cpp_exec/vendor/backpack-cpp-sdk/include -I/usr/local/include -I/Users/penrose/HL-cli/cpp_exec/.. -isystem /opt/homebrew/Cellar/openssl@3/3.4.1/include -isystem /opt/homebrew/include -std=gnu++20 -arch arm64 -Wno-deprecated-declarations -Wall -Wextra -Wpedantic -o CMakeFiles/exec_bridge_lib.dir/exec_bridge.cpp.o -c /Users/penrose/HL-cli/cpp_exec/exec_bridge.cpp",
+  "file": "/Users/penrose/HL-cli/cpp_exec/exec_bridge.cpp",
+  "output": "CMakeFiles/exec_bridge_lib.dir/exec_bridge.cpp.o"
+},
+{
+  "directory": "/Users/penrose/HL-cli/cpp_exec",
+  "command": "/opt/homebrew/bin/g++-13 -DFMT_SHARED -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/Users/penrose/HL-cli/cpp_exec -I/Users/penrose/HL-cli/cpp_exec/vendor -I/Users/penrose/HL-cli/cpp_exec/include -I/Users/penrose/HL-cli/cpp_exec/../hiredis/include -I/Users/penrose/HL-cli/cpp_exec/vendor/backpack-cpp-sdk/include -I/usr/local/include -I/Users/penrose/HL-cli/cpp_exec/.. -isystem /opt/homebrew/Cellar/openssl@3/3.4.1/include -isystem /opt/homebrew/include -std=gnu++20 -arch arm64 -Wno-deprecated-declarations -Wall -Wextra -Wpedantic -o CMakeFiles/exec_bridge_lib.dir/risk_manager.cpp.o -c /Users/penrose/HL-cli/cpp_exec/risk_manager.cpp",
+  "file": "/Users/penrose/HL-cli/cpp_exec/risk_manager.cpp",
+  "output": "CMakeFiles/exec_bridge_lib.dir/risk_manager.cpp.o"
+},
+{
+  "directory": "/Users/penrose/HL-cli/cpp_exec",
+  "command": "/opt/homebrew/bin/g++-13 -DFMT_SHARED -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/Users/penrose/HL-cli/cpp_exec -I/Users/penrose/HL-cli/cpp_exec/vendor -I/Users/penrose/HL-cli/cpp_exec/include -I/Users/penrose/HL-cli/cpp_exec/../hiredis/include -I/Users/penrose/HL-cli/cpp_exec/vendor/backpack-cpp-sdk/include -I/usr/local/include -I/Users/penrose/HL-cli/cpp_exec/.. -isystem /opt/homebrew/Cellar/openssl@3/3.4.1/include -isystem /opt/homebrew/include -std=gnu++20 -arch arm64 -Wno-deprecated-declarations -Wall -Wextra -Wpedantic -o CMakeFiles/exec_bridge_lib.dir/indicators.cpp.o -c /Users/penrose/HL-cli/cpp_exec/indicators.cpp",
+  "file": "/Users/penrose/HL-cli/cpp_exec/indicators.cpp",
+  "output": "CMakeFiles/exec_bridge_lib.dir/indicators.cpp.o"
+},
+{
+  "directory": "/Users/penrose/HL-cli/cpp_exec",
+  "command": "/opt/homebrew/bin/g++-13 -DFMT_SHARED -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/Users/penrose/HL-cli/cpp_exec -I/Users/penrose/HL-cli/cpp_exec/vendor -I/Users/penrose/HL-cli/cpp_exec/include -I/Users/penrose/HL-cli/cpp_exec/../hiredis/include -I/Users/penrose/HL-cli/cpp_exec/vendor/backpack-cpp-sdk/include -I/usr/local/include -I/Users/penrose/HL-cli/cpp_exec/.. -isystem /opt/homebrew/Cellar/openssl@3/3.4.1/include -isystem /opt/homebrew/include -std=gnu++20 -arch arm64 -Wno-deprecated-declarations -Wall -Wextra -Wpedantic -o CMakeFiles/exec_bridge_lib.dir/backpack_client.cpp.o -c /Users/penrose/HL-cli/cpp_exec/backpack_client.cpp",
+  "file": "/Users/penrose/HL-cli/cpp_exec/backpack_client.cpp",
+  "output": "CMakeFiles/exec_bridge_lib.dir/backpack_client.cpp.o"
+},
+{
+  "directory": "/Users/penrose/HL-cli/cpp_exec",
+  "command": "/opt/homebrew/bin/g++-13 -DFMT_SHARED -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/Users/penrose/HL-cli/cpp_exec -I/Users/penrose/HL-cli/cpp_exec/vendor -I/Users/penrose/HL-cli/cpp_exec/include -I/Users/penrose/HL-cli/cpp_exec/../hiredis/include -I/Users/penrose/HL-cli/cpp_exec/vendor/backpack-cpp-sdk/include -I/usr/local/include -I/Users/penrose/HL-cli/cpp_exec/.. -isystem /opt/homebrew/Cellar/openssl@3/3.4.1/include -isystem /opt/homebrew/include -std=gnu++20 -arch arm64 -Wno-deprecated-declarations -Wall -Wextra -Wpedantic -o CMakeFiles/exec_bridge_lib.dir/execution_client.cpp.o -c /Users/penrose/HL-cli/cpp_exec/execution_client.cpp",
+  "file": "/Users/penrose/HL-cli/cpp_exec/execution_client.cpp",
+  "output": "CMakeFiles/exec_bridge_lib.dir/execution_client.cpp.o"
+},
+{
+  "directory": "/Users/penrose/HL-cli/cpp_exec",
+  "command": "/opt/homebrew/bin/g++-13 -DFMT_SHARED -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/Users/penrose/HL-cli/cpp_exec -I/Users/penrose/HL-cli/cpp_exec/vendor -I/Users/penrose/HL-cli/cpp_exec/include -I/Users/penrose/HL-cli/cpp_exec/../hiredis/include -I/Users/penrose/HL-cli/cpp_exec/vendor/backpack-cpp-sdk/include -I/usr/local/include -I/Users/penrose/HL-cli/cpp_exec/.. -isystem /opt/homebrew/Cellar/openssl@3/3.4.1/include -isystem /opt/homebrew/include -std=gnu++20 -arch arm64 -Wno-deprecated-declarations -Wall -Wextra -Wpedantic -o CMakeFiles/exec_bridge_lib.dir/redis_subscriber.cpp.o -c /Users/penrose/HL-cli/cpp_exec/redis_subscriber.cpp",
+  "file": "/Users/penrose/HL-cli/cpp_exec/redis_subscriber.cpp",
+  "output": "CMakeFiles/exec_bridge_lib.dir/redis_subscriber.cpp.o"
+},
+{
+  "directory": "/Users/penrose/HL-cli/cpp_exec",
+  "command": "/opt/homebrew/bin/g++-13 -DFMT_SHARED -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/Users/penrose/HL-cli/cpp_exec -I/Users/penrose/HL-cli/cpp_exec/vendor -I/Users/penrose/HL-cli/cpp_exec/include -I/Users/penrose/HL-cli/cpp_exec/../hiredis/include -I/Users/penrose/HL-cli/cpp_exec/vendor/backpack-cpp-sdk/include -I/usr/local/include -I/Users/penrose/HL-cli/cpp_exec/.. -isystem /opt/homebrew/Cellar/openssl@3/3.4.1/include -isystem /opt/homebrew/include -std=gnu++20 -arch arm64 -Wno-deprecated-declarations -Wall -Wextra -Wpedantic -o CMakeFiles/exec_bridge.dir/main.cpp.o -c /Users/penrose/HL-cli/cpp_exec/main.cpp",
+  "file": "/Users/penrose/HL-cli/cpp_exec/main.cpp",
+  "output": "CMakeFiles/exec_bridge.dir/main.cpp.o"
+},
+{
+  "directory": "/Users/penrose/HL-cli/cpp_exec",
+  "command": "/opt/homebrew/bin/g++-13 -DFMT_SHARED -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/Users/penrose/HL-cli/cpp_exec -I/Users/penrose/HL-cli/cpp_exec/vendor -I/Users/penrose/HL-cli/cpp_exec/include -I/Users/penrose/HL-cli/cpp_exec/../hiredis/include -I/Users/penrose/HL-cli/cpp_exec/vendor/backpack-cpp-sdk/include -I/usr/local/include -I/Users/penrose/HL-cli/cpp_exec/.. -isystem /opt/homebrew/Cellar/openssl@3/3.4.1/include -isystem /opt/homebrew/include -std=gnu++20 -arch arm64 -Wall -Wextra -o CMakeFiles/cpp_exec_test.dir/test_exec.cpp.o -c /Users/penrose/HL-cli/cpp_exec/test_exec.cpp",
+  "file": "/Users/penrose/HL-cli/cpp_exec/test_exec.cpp",
+  "output": "CMakeFiles/cpp_exec_test.dir/test_exec.cpp.o"
+}
+]

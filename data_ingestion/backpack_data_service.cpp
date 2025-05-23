@@ -40,7 +40,7 @@
 #include <curl/curl.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include <sw/redis++/redis++.h>
+#include "../redis-plus-plus/src/sw/redis++/redis++.h"
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -219,7 +219,7 @@ private:
                         }
                         
                         // Execute parameterized query directly
-                        txn.exec_params(paramQuery, params);
+                        txn.exec(paramQuery, params);
                     }
                     
                     // Commit all inserts in one transaction
@@ -255,32 +255,44 @@ public:
     SecureWebSocketClient(const std::string& host,
                          const std::string& port = "443",
                          const std::string& path = "/")
-        : ioc_(),
-          ctx_(ssl::context::tlsv12_client),
-          resolver_(ioc_),
-          ws_(std::make_unique<websocket::stream<ssl::stream<tcp::socket>>>(ioc_, ctx_)),
-          host_(host),
-          path_(path) {
+        : ioc_()
+        , ctx_(ssl::context::tlsv12_client)
+        , resolver_(ioc_)
+        , ws_(std::make_unique<websocket::stream<beast::ssl_stream<beast::tcp_stream>>>(ioc_, ctx_))
+        , host_(host)
+        , path_(path) {
         
-        // Set SNI hostname and verify certificate
-        if(!SSL_set_tlsext_host_name(ws_->next_layer().native_handle(), host_.c_str())) {
-            throw boost::system::system_error(
-                boost::system::error_code(
+        // Set SNI hostname
+        if(!SSL_set_tlsext_host_name(ws_->next_layer().native_handle(), host.c_str())) {
+            throw beast::system_error(
+                beast::error_code(
                     static_cast<int>(::ERR_get_error()),
-                    net::error::get_ssl_category()
-                )
-            );
+                    net::error::get_ssl_category()),
+                "Failed to set SNI Hostname");
         }
 
-        // DNS resolve & TCP connect
-        auto const results = resolver_.resolve(host_, port);
-        net::connect(ws_->next_layer().next_layer(), results);
+        // Look up the domain name
+        auto const results = resolver_.resolve(host, port);
 
-        // SSL handshake
+        // Make the connection on the IP address we get from a lookup
+        beast::get_lowest_layer(*ws_).connect(results);
+
+        // Perform the SSL handshake
         ws_->next_layer().handshake(ssl::stream_base::client);
 
-        // WebSocket handshake
-        ws_->handshake(host_, path_);
+        // Set suggested timeout settings for the websocket
+        ws_->set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
+
+        // Set a decorator to change the User-Agent of the handshake
+        ws_->set_option(websocket::stream_base::decorator(
+            [](websocket::request_type& req) {
+                req.set(http::field::user_agent,
+                    std::string(BOOST_BEAST_VERSION_STRING) +
+                        " websocket-client-beast");
+            }));
+
+        // Perform the websocket handshake
+        ws_->handshake(host, path);
     }
 
     void send(const std::string& text) {
@@ -291,22 +303,31 @@ public:
         ws_->async_read(
             buffer_,
             [this, handler](beast::error_code ec, std::size_t) {
-        if (ec) {
-                    std::cerr << "WS read error: " << ec.message() << std::endl;
+                if (ec) {
+                    std::cerr << "WebSocket read error: " << ec.message() << std::endl;
                     return;
                 }
-                std::string msg = beast::buffers_to_string(buffer_.data());
+                
+                // Convert buffer to string
+                std::string msg;
+                msg.resize(buffer_.size());
+                boost::asio::buffer_copy(boost::asio::buffer(msg), buffer_.data());
                 buffer_.consume(buffer_.size());
+                
                 handler(msg);
-                read(handler); // continue streaming
+                
+                // Continue reading
+                read(handler);
             });
     }
 
     void close() {
-        beast::error_code ec;
-        ws_->close(websocket::close_code::normal, ec);
-        if(ec) {
-            std::cerr << "Error closing WebSocket: " << ec.message() << std::endl;
+        if (ws_) {
+            beast::error_code ec;
+            ws_->close(websocket::close_code::normal, ec);
+            if (ec) {
+                std::cerr << "Error closing websocket: " << ec.message() << std::endl;
+            }
         }
     }
 
@@ -318,7 +339,7 @@ private:
     net::io_context ioc_;
     ssl::context ctx_;
     tcp::resolver resolver_;
-    std::unique_ptr<websocket::stream<ssl::stream<tcp::socket>>> ws_;
+    std::unique_ptr<websocket::stream<beast::ssl_stream<beast::tcp_stream>>> ws_;
     beast::flat_buffer buffer_;
     std::string host_;
     std::string path_;
@@ -437,9 +458,9 @@ struct OrderBookCache {
     }
 };
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Main service combining realâ€‘time + historical collection
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class BackpackDataService {
 public:
     BackpackDataService()
@@ -490,7 +511,7 @@ private:
 
     void subscribeStreams() {
         try {
-            std::string trading_symbol = util::getenv_or("TRADING__SYMBOL", "SOL_USDC_PERP");
+            std::string trading_symbol = util::getenv_or("TRADING_SYMBOL", "SOL_USDC_PERP");
         json sub;
         sub["method"] = "SUBSCRIBE";
         sub["id"] = util::now_ms();
@@ -566,14 +587,13 @@ private:
             handleDepth(data);
         }
         else if (stream.rfind("bookTicker.", 0) == 0) {
-            std::cout << "Handling book ticker message" << std::endl;
             handleBookTicker(data);
         }
     }
 
     void handleTrade(const json& d) {
         std::string symbol = d.value("s", "");
-        if (symbol.empty() || symbol != util::getenv_or("TRADING__SYMBOL", "SOL_USDC_PERP")) {
+        if (symbol.empty() || symbol != util::getenv_or("TRADING_SYMBOL", "SOL_USDC_PERP")) {
             std::cout << "Skipping trade for non-matching symbol: " << symbol << std::endl;
             return;
         }
@@ -642,7 +662,7 @@ private:
         std::string interval = parts[1];
         std::string symbol = parts[2];
         
-        if (symbol != util::getenv_or("TRADING__SYMBOL", "SOL_USDC_PERP")) {
+        if (symbol != util::getenv_or("TRADING_SYMBOL", "SOL_USDC_PERP")) {
             std::cout << "Skipping kline for non-matching symbol: " << symbol << std::endl;
             return;
         }
@@ -742,7 +762,7 @@ private:
 
     void handleDepth(const json& d) {
         std::string symbol = d.value("s", "");
-        if (symbol.empty() || symbol != util::getenv_or("TRADING__SYMBOL", "SOL_USDC_PERP")) return;
+        if (symbol.empty() || symbol != util::getenv_or("TRADING_SYMBOL", "SOL_USDC_PERP")) return;
         
         int64_t ts_ms = util::to_ms(d.value("T", 0LL));
         
@@ -755,9 +775,15 @@ private:
                   << " | Bids: " << cache.bids.size() 
                   << " | Asks: " << cache.asks.size() << std::endl;
         
-        // Only write periodically
-        if (cache.shouldWrite(ts_ms)) {
+        // Only write if we have both bids and asks
+        if (cache.shouldWrite(ts_ms) && !cache.bids.empty() && !cache.asks.empty()) {
             auto [bids_json, asks_json] = cache.getSnapshot();
+            
+            // Additional validation
+            if (bids_json.empty() || asks_json.empty()) {
+                std::cerr << "Warning: Empty bids or asks JSON at " << ts_ms << std::endl;
+                return;
+            }
             
             DBOperation op;
             op.query = "INSERT INTO orderbook_snapshots (symbol, timestamp, last_update_id, bids, asks) VALUES";
@@ -774,56 +800,44 @@ private:
         }
     }
 
-    void handleBookTicker(const json& d) {
-        std::string symbol = util::json_get_string(d, "s");
-        if (symbol.empty() || symbol != util::getenv_or("TRADING_SYMBOL", "SOL_USDC_PERP")) {
-            // std::cout << "Skipping book ticker for non-matching symbol: " << symbol << std::endl; // Optional: reduce log noise
-            return;
+    void handleBookTicker(const json& data) {
+        try {
+            const std::string& symbol = data["s"].get<std::string>();
+            double bidPrice = std::stod(data["b"].get<std::string>());
+            double askPrice = std::stod(data["a"].get<std::string>());
+            double bidQty = std::stod(data["B"].get<std::string>());
+            double askQty = std::stod(data["A"].get<std::string>());
+            int64_t timestamp = util::to_ms(util::json_get_int64(data, "T"));
+            std::string updateId = std::to_string(util::json_get_int64(data, "u"));
+
+            // First publish to Redis for low-latency consumers
+            json l1_data = {
+                {"symbol", symbol},
+                {"bidPrice", bidPrice},
+                {"askPrice", askPrice},
+                {"bidQty", bidQty},
+                {"askQty", askQty},
+                {"timestamp", timestamp},
+                {"updateId", updateId}
+            };
+            g_redis_client->publish("l1:quotes", l1_data.dump());
+
+            // Then write to Postgres as before
+            DBOperation op;
+            op.query = "INSERT INTO book_tickers (symbol, bid_price, ask_price, bid_quantity, ask_quantity, timestamp, update_id) VALUES";
+            op.params = {{
+                symbol,
+                str(bidPrice),
+                str(askPrice),
+                str(bidQty),
+                str(askQty),
+                std::to_string(timestamp),
+                updateId
+            }};
+            dbWriter_.enqueue(op);
+        } catch (const std::exception& e) {
+            std::cerr << "Error handling book ticker: " << e.what() << std::endl;
         }
-
-        int64_t ts_ms = util::to_ms(util::json_get_int64(d, "T", util::now_ms())); // Use now_ms() as fallback
-        std::string update_id_str = util::json_get_string(d, "u");
-        if (update_id_str.empty() && d.contains("u") && d["u"].is_number()) { // Handle numeric u
-             update_id_str = std::to_string(d["u"].get<int64_t>());
-        }
-
-        double ask_price = util::json_get_double(d, "a");
-        double ask_qty = util::json_get_double(d, "A");
-        double bid_price = util::json_get_double(d, "b");
-        double bid_qty = util::json_get_double(d, "B");
-
-
-        // std::cout << "BOOK TICKER: " << symbol << " | Time: " << ts_ms
-        //           << " | Ask: " << ask_price << "@" << ask_qty
-        //           << " | Bid: " << bid_price << "@" << bid_qty
-        //           << " | Update ID: " << update_id_str << std::endl; // Optional: reduce log noise
-
-        // Publish to Redis
-        if (g_redis_client) {
-            try {
-                std::string payload = d.dump(); // Use the original JSON data
-                g_redis_client->publish("l1:quotes", payload);
-                // std::cout << "Published to Redis l1:quotes: " << payload << std::endl; // Optional debug log
-            } catch (const sw::redis::Error &e) {
-                std::cerr << "Redis publish error: " << e.what() << std::endl;
-                // Optional: attempt to reconnect or handle error
-            }
-        } else {
-             std::cerr << "Redis client not initialized. Skipping publish." << std::endl;
-        }
-
-        // DBOperation op;                                               // <-- REMOVE DB WRITE
-        // op.query = "INSERT INTO book_tickers (symbol, timestamp, update_id, ask_price, ask_quantity, bid_price, bid_quantity) VALUES"; // <-- REMOVE DB WRITE
-        // op.params.push_back({                                         // <-- REMOVE DB WRITE
-        //     symbol,                                                   // <-- REMOVE DB WRITE
-        //     std::to_string(ts_ms),                                    // <-- REMOVE DB WRITE
-        //     update_id_str,                                            // <-- REMOVE DB WRITE
-        //     str(ask_price),                                           // <-- REMOVE DB WRITE
-        //     str(ask_qty),                                             // <-- REMOVE DB WRITE
-        //     str(bid_price),                                           // <-- REMOVE DB WRITE
-        //     str(bid_qty)                                              // <-- REMOVE DB WRITE
-        // });                                                           // <-- REMOVE DB WRITE
-        // dbWriter_.enqueue(op);                                        // <-- REMOVE DB WRITE
     }
 
     // Simple split helper
@@ -884,7 +898,7 @@ int main() {
     try {
         sw::redis::ConnectionOptions connection_options;
         connection_options.host = util::getenv_or("REDIS_HOST", "localhost");
-        connection_options.port = std::stoi(util::getenv_or("REDIS_PORT", "6379"));
+        connection_options.port = std::stoi(util::getenv_or("REDIS_PORT", "6970"));
         // Add password if needed: connection_options.password = util::getenv_or("REDIS_PASSWORD");
         // Add socket timeout if needed: connection_options.socket_timeout = std::chrono::milliseconds(500);
 

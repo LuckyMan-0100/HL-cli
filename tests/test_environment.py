@@ -4,6 +4,7 @@ from decimal import Decimal
 from rl.environment import TradingEnvironment
 from data_ingestion.memory_store import MemoryStore, OrderBook
 from risk_management.risk_manager import RiskManager, Position
+from tests.utils.mocks import MockOrderBook  # Import mock from utilities
 
 class MockOrderBook:
     def __init__(self, bids, asks):
@@ -139,6 +140,26 @@ def test_edge_cases(env):
     env.memory_store.clear()
     obs, reward, done, truncated, info = env.step(np.array([0.1]))
     assert "error" in info
+
+def test_trading_environment():
+    # Test setup using mock from test utilities
+    risk_manager = RiskManager()
+    env = TradingEnvironment(risk_manager)
+    
+    # Test environment initialization
+    assert env.position == 0
+    assert env.cash > 0
+    
+    # Test order placement
+    order = env.place_order("buy", 1.0, 100.0)
+    assert order is not None
+    assert order.side == "buy"
+    assert order.qty == 1.0
+    
+    # Test position tracking
+    position = env.get_position()
+    assert position.size == 1.0
+    assert position.entry_price == 100.0
 
 if __name__ == "__main__":
     pytest.main([__file__]) 

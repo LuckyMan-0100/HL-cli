@@ -8,7 +8,7 @@ stores the result as a Parquet file (`data/ohlcv.parquet`).
 Environment
 -----------
 EXCHANGE_ID=backpack       # any exchange supported by ccxt
-TRADING_SYMBOL=SOL/USDC:USDC
+TRADING_SYMBOL=SOL_USDC_PERP
 TIMEFRAME=1m
 LOOKBACK_DAYS=30
 """
@@ -23,7 +23,7 @@ import pandas as pd
 
 def main() -> None:
     exch_id = os.getenv("EXCHANGE_ID", "backpack")
-    symbol = os.getenv("TRADING_SYMBOL", "SOL/USDC:USDC")
+    symbol = os.getenv("TRADING_SYMBOL", "SOL_USDC_PERP")
     timeframe = os.getenv("TIMEFRAME", "1m")
     lookback_days = int(os.getenv("LOOKBACK_DAYS", "30"))
 

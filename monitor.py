@@ -8,195 +8,196 @@ import redis
 import psycopg2
 from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import psutil
+import numpy as np
+from pathlib import Path
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('logs/monitor.log')
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
-class TradingMonitor:
-    def __init__(self):
-        # Initialize connections
-        self.redis = redis.Redis(
-            host=os.getenv('REDIS_HOST', 'localhost'),
-            port=int(os.getenv('REDIS_PORT', 6379))
-        )
+class SystemMonitor:
+    def __init__(self,
+                 redis_url: str = "redis://localhost:6379",
+                 pg_conn_str: Optional[str] = None,
+                 feature_path: str = "/tmp/features.parquet",
+                 alert_latency_threshold_us: int = 150):
+        """
+        Initialize system monitor.
         
-        self.pg_conn = psycopg2.connect(
-            host=os.getenv('DB_HOST', 'localhost'),
-            port=int(os.getenv('DB_PORT', 5432)),
-            dbname=os.getenv('DB_NAME', 'trading_data'),
-            user=os.getenv('DB_USER', 'penrose'),
-            password=os.getenv('DB_PASSWORD', '')
-        )
+        Args:
+            redis_url: Redis connection URL
+            pg_conn_str: PostgreSQL connection string (optional)
+            feature_path: Path to feature parquet file
+            alert_latency_threshold_us: Latency threshold for alerts (microseconds)
+        """
+        self.redis = redis.from_url(redis_url)
+        self.pg_conn = psycopg2.connect(pg_conn_str) if pg_conn_str else None
+        self.feature_path = Path(feature_path)
+        self.alert_threshold = alert_latency_threshold_us
         
-        # Risk parameters
-        self.max_drawdown = float(os.getenv('RISK__MAX_DRAWDOWN_PCT', 0.002))
-        self.max_notional = float(os.getenv('RISK__MAX_NOTIONAL_USD', 1000000.0))
-        self.max_consecutive_losses = int(os.getenv('RISK__MAX_CONSECUTIVE_LOSSES', 3))
-        self.initial_equity = float(os.getenv('SIZING__INITIAL_EQUITY_USD', 100.0))
+        # Monitoring state
+        self.last_l1_ts = 0
+        self.last_feature_ts = 0
+        self.last_feature_count = 0
         
-        # State tracking
-        self.last_equity = self.initial_equity
-        self.consecutive_losses = 0
-        self.peak_equity = self.initial_equity
-        self.current_positions: Dict[str, Any] = {}
-        
-    def check_system_health(self) -> bool:
-        """Check if all system components are running and responsive"""
+    def check_l1_latency(self) -> Dict:
+        """Check L1 data latency and throughput."""
         try:
-            # Check Redis connection
-            redis_ok = self.redis.ping()
+            # Subscribe to L1 quotes temporarily
+            pubsub = self.redis.pubsub()
+            pubsub.subscribe('l1:quotes')
             
-            # Check PostgreSQL connection
-            with self.pg_conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                pg_ok = cur.fetchone()[0] == 1
-            
-            # Check data service (via Redis L1 data freshness)
-            l1_data = self.redis.get('l1:quotes:last_update')
-            if l1_data:
-                last_update = float(l1_data)
-                data_fresh = (time.time() - last_update) < 5  # Data should be < 5s old
-            else:
-                data_fresh = False
-            
-            return all([redis_ok, pg_ok, data_fresh])
-            
+            # Wait for message
+            message = pubsub.get_message(timeout=1.0)
+            if message and message['type'] == 'message':
+                data = pd.read_json(message['data'])
+                now = pd.Timestamp.utcnow().timestamp() * 1000
+                ts = data['ts']
+                
+                latency = now - ts
+                throughput = (ts - self.last_l1_ts) if self.last_l1_ts > 0 else 0
+                self.last_l1_ts = ts
+                
+                return {
+                    'l1_latency_us': latency * 1000,  # ms to µs
+                    'l1_throughput_hz': 1000 / throughput if throughput > 0 else 0
+                }
+                
         except Exception as e:
-            logging.error(f"Health check failed: {e}")
-            return False
+            logger.error(f"Error checking L1 latency: {e}")
+            
+        return {'l1_latency_us': np.nan, 'l1_throughput_hz': 0}
     
-    def get_current_positions(self) -> Dict[str, Any]:
-        """Get current positions from the execution bridge"""
+    def check_feature_generation(self) -> Dict:
+        """Check feature generation status."""
         try:
-            positions_json = self.redis.get('positions:current')
-            if positions_json:
-                return json.loads(positions_json)
-            return {}
-        except Exception as e:
-            logging.error(f"Error getting positions: {e}")
-            return {}
-    
-    def calculate_risk_metrics(self) -> Dict[str, float]:
-        """Calculate current risk metrics"""
-        try:
-            positions = self.get_current_positions()
+            if not self.feature_path.exists():
+                return {
+                    'feature_latency_ms': np.nan,
+                    'features_per_sec': 0,
+                    'feature_count': 0
+                }
             
-            # Calculate total notional exposure
-            total_notional = sum(
-                abs(float(pos['size']) * float(pos['entry_price']))
-                for pos in positions.values()
-            )
+            # Read latest features
+            df = pd.read_parquet(self.feature_path)
+            if df.empty:
+                return {
+                    'feature_latency_ms': np.nan,
+                    'features_per_sec': 0,
+                    'feature_count': 0
+                }
             
-            # Calculate current equity
-            current_equity = float(self.redis.get('account:equity') or self.last_equity)
-            self.last_equity = current_equity
+            now = pd.Timestamp.utcnow().timestamp() * 1000
+            latest_ts = df['ts'].max()
+            count = len(df)
             
-            # Update peak equity and calculate drawdown
-            self.peak_equity = max(self.peak_equity, current_equity)
-            current_drawdown = (self.peak_equity - current_equity) / self.peak_equity
+            # Calculate metrics
+            latency = now - latest_ts
+            throughput = (count - self.last_feature_count) if self.last_feature_count > 0 else 0
             
-            # Calculate profit/loss
-            pnl_24h = current_equity - self.initial_equity
-            pnl_pct_24h = pnl_24h / self.initial_equity
+            self.last_feature_ts = latest_ts
+            self.last_feature_count = count
             
             return {
-                'total_notional': total_notional,
-                'current_equity': current_equity,
-                'peak_equity': self.peak_equity,
-                'current_drawdown': current_drawdown,
-                'pnl_24h': pnl_24h,
-                'pnl_pct_24h': pnl_pct_24h
+                'feature_latency_ms': latency,
+                'features_per_sec': throughput,
+                'feature_count': count
             }
             
         except Exception as e:
-            logging.error(f"Error calculating risk metrics: {e}")
-            return {}
+            logger.error(f"Error checking feature generation: {e}")
+            return {
+                'feature_latency_ms': np.nan,
+                'features_per_sec': 0,
+                'feature_count': 0
+            }
     
-    def check_risk_limits(self, metrics: Dict[str, float]) -> bool:
-        """Check if any risk limits are breached"""
-        if not metrics:
-            return False
-            
-        breaches = []
-        
-        # Check notional exposure
-        if metrics['total_notional'] > self.max_notional:
-            breaches.append(f"Notional exposure (${metrics['total_notional']:,.2f}) exceeds limit (${self.max_notional:,.2f})")
-        
-        # Check drawdown
-        if metrics['current_drawdown'] > self.max_drawdown:
-            breaches.append(f"Current drawdown ({metrics['current_drawdown']:.2%}) exceeds limit ({self.max_drawdown:.2%})")
-        
-        # Check consecutive losses
-        if metrics['pnl_24h'] < 0:
-            self.consecutive_losses += 1
-            if self.consecutive_losses >= self.max_consecutive_losses:
-                breaches.append(f"Hit {self.consecutive_losses} consecutive losses (max: {self.max_consecutive_losses})")
-        else:
-            self.consecutive_losses = 0
-        
-        if breaches:
-            logging.WARNING("RISK LIMITS BREACHED:\n" + "\n".join(breaches))
-            return False
-        
-        return True
-    
-    def display_status(self, metrics: Dict[str, float]):
-        """Display current system status and metrics"""
-        now = datetime.datetime.now()
-        
-        print("\033[2J\033[H")  # Clear screen
-        print(f"=== Trading System Monitor === ({now:%Y-%m-%d %H:%M:%S})")
-        print("\nSystem Health:")
-        print(f"{'✓' if self.check_system_health() else '✗'} System Components")
-        
-        print("\nRisk Metrics:")
-        print(f"Current Equity: ${metrics['current_equity']:,.2f}")
-        print(f"Peak Equity:   ${metrics['peak_equity']:,.2f}")
-        print(f"Drawdown:      {metrics['current_drawdown']:.2%}")
-        print(f"24h PnL:       ${metrics['pnl_24h']:,.2f} ({metrics['pnl_pct_24h']:.2%})")
-        print(f"Notional:      ${metrics['total_notional']:,.2f}")
-        
-        positions = self.get_current_positions()
-        print("\nActive Positions:")
-        for symbol, pos in positions.items():
-            print(f"{symbol}: {pos['size']} @ {pos['entry_price']} (PnL: ${pos.get('unrealized_pnl', 0):,.2f})")
-        
-        print("\nRisk Limits:")
-        print(f"Max Drawdown:  {self.max_drawdown:.2%}")
-        print(f"Max Notional:  ${self.max_notional:,.2f}")
-        print(f"Max Cons. Loss: {self.max_consecutive_losses}")
-        
-    def run(self):
-        """Main monitoring loop"""
+    def check_system_resources(self) -> Dict:
+        """Check system resource usage."""
         try:
-            while True:
-                metrics = self.calculate_risk_metrics()
-                if metrics:
-                    self.display_status(metrics)
-                    if not self.check_risk_limits(metrics):
-                        logging.WARNING("Risk limits breached! Consider intervention.")
-                time.sleep(1)  # Update every second
-                
-        except KeyboardInterrupt:
-            logging.info("Monitoring stopped by user.")
+            # Monitor this process
+            process = psutil.Process()
+            metrics = {
+                'cpu_percent': process.cpu_percent(),
+                'memory_mb': process.memory_info().rss / 1024 / 1024,
+                'disk_usage_percent': psutil.disk_usage('/').percent,
+                'open_files': len(process.open_files()),
+                'threads': len(process.threads())
+            }
+            # Track external trading processes by name/keyword
+            monitored = {'exec_bridge': 0, 'ml_signal_producer': 0, 'feeder': 0}
+            for proc in psutil.process_iter(['name', 'cmdline', 'memory_info']):
+                cmdline = ' '.join(proc.info.get('cmdline') or [])
+                name = proc.info.get('name', '')
+                rss_info = proc.info.get('memory_info')
+                rss = rss_info.rss if rss_info else 0
+                for key in monitored:
+                    if key in cmdline or key in name:
+                        monitored[key] += rss
+            # Add external process memory metrics
+            for key, rss in monitored.items():
+                metrics[f'{key}_memory_mb'] = rss / 1024 / 1024
+            return metrics
+            
         except Exception as e:
-            logging.error(f"Monitoring error: {e}")
-        finally:
-            self.redis.close()
-            self.pg_conn.close()
+            logger.error(f"Error checking system resources: {e}")
+            return {
+                'cpu_percent': np.nan,
+                'memory_mb': np.nan,
+                'disk_usage_percent': np.nan,
+                'open_files': np.nan,
+                'threads': np.nan
+            }
+    
+    def run(self, interval: float = 1.0):
+        """Main monitoring loop."""
+        logger.info("Starting system monitor...")
+        
+        while True:
+            try:
+                # Collect metrics
+                metrics = {}
+                metrics.update(self.check_l1_latency())
+                metrics.update(self.check_feature_generation())
+                metrics.update(self.check_system_resources())
+                
+                # Log metrics
+                logger.info("System metrics:")
+                for k, v in metrics.items():
+                    logger.info(f"  {k}: {v}")
+                
+                # Check for alerts
+                if metrics['l1_latency_us'] > self.alert_threshold:
+                    logger.warning(
+                        f"High L1 latency: {metrics['l1_latency_us']:.2f} µs > "
+                        f"{self.alert_threshold} µs threshold"
+                    )
+                
+                if metrics['feature_latency_ms'] > 1000:  # 1 second
+                    logger.warning(
+                        f"High feature latency: {metrics['feature_latency_ms']:.2f} ms"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Error in monitoring loop: {e}")
+                
+            time.sleep(interval)
 
 if __name__ == "__main__":
-    monitor = TradingMonitor()
+    # Get config from environment
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    pg_conn = os.getenv("DB_CONNECTION_STRING")
+    
+    monitor = SystemMonitor(
+        redis_url=redis_url,
+        pg_conn_str=pg_conn
+    )
     monitor.run() 

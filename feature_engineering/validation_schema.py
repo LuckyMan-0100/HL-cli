@@ -1,41 +1,72 @@
+"""Validation schema for L2 features."""
+
 import pandera as pa
-from pandera.typing import Series
-import pandas as pd
+import numpy as np
 
-class L2FeaturesSchema(pa.SchemaModel):
-    """Validation schema for L2 features."""
+# Create schema for L2 features
+L2FeaturesSchema = pa.DataFrameSchema({
+    # Price-based features
+    'rel_spread': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    'spread_ma': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    'spread_std': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    'spread_ticks': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
     
-    symbol: Series[str] = pa.Field(coerce=True)
-    timestamp: Series[int] = pa.Field(ge=0)
-    queue_imbalance: Series[float] = pa.Field(ge=-1, le=1)
-    order_flow_imbalance: Series[float] = pa.Field(ge=-1, le=1)
-    depth_slope_bids: Series[float] = pa.Field()  # Can be any float
-    depth_slope_asks: Series[float] = pa.Field()  # Can be any float
+    # Volume imbalance features
+    'vol_imb': pa.Column(float, checks=[
+        pa.Check.in_range(-1, 1)
+    ]),
+    'ofi_1': pa.Column(float),
+    'ofi_3': pa.Column(float),
+    'ofi_10': pa.Column(float),
     
-    class Config:
-        strict = True
-        coerce = True
-
-    @pa.check("symbol")
-    def check_symbol_format(cls, series: Series[str]) -> bool:
-        """Check if symbol follows expected format."""
-        return series.str.contains(r'^[A-Z]+_[A-Z]+(_PERP)?$').all()
-
-    @pa.check("timestamp")
-    def check_timestamp_range(cls, series: Series[int]) -> bool:
-        """Check if timestamp is within reasonable range."""
-        current_time = pd.Timestamp.now().timestamp() * 1e6  # microseconds
-        return (series >= 0) & (series <= current_time).all()
-
-    @pa.check("depth_slope_bids")
-    def check_depth_slope_bids(cls, series: Series[float]) -> bool:
-        """Check if bid slope is negative (decreasing prices)."""
-        return (series <= 0).all()
-
-    @pa.check("depth_slope_asks")
-    def check_depth_slope_asks(cls, series: Series[float]) -> bool:
-        """Check if ask slope is positive (increasing prices)."""
-        return (series >= 0).all()
+    # Moving averages of OFI
+    'ofi_1_ma': pa.Column(float),
+    'ofi_3_ma': pa.Column(float),
+    'ofi_10_ma': pa.Column(float),
+    
+    # OFI volatility
+    'ofi_1_std': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    'ofi_3_std': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    'ofi_10_std': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    
+    # Microprice features
+    'mp_slope': pa.Column(float),
+    'mp_accel': pa.Column(float),
+    'flow_mp_slope': pa.Column(float),
+    
+    # Queue position features
+    'bid_depth_ratio_1': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    'ask_depth_ratio_1': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    'bid_depth_ratio_2': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    'ask_depth_ratio_2': pa.Column(float, checks=[
+        pa.Check.greater_than_or_equal_to(0)
+    ]),
+    
+    # Fill probability
+    'fill_prob': pa.Column(float, checks=[
+        pa.Check.in_range(0, 1)
+    ])
+}, strict=True, coerce=True)
 
 # Example usage:
 # df = pd.DataFrame({...})

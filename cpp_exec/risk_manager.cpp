@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <chrono>
+#include <spdlog/spdlog.h>
 
 namespace bp {
 
@@ -24,108 +25,148 @@ RiskManager::RiskManager(double max_daily_drawdown_pct)
 }
 
 bool RiskManager::checkRiskLimits() {
-    if (trading_halted_.load()) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    // Check daily PnL limit
+    if (daily_pnl_ < -getMaxDailyLoss()) {
+        spdlog::error("Daily loss limit exceeded: {} < -{}", daily_pnl_, getMaxDailyLoss());
+        trading_halted_ = true;
         return false;
     }
 
-    try {
-        updateEquityMetrics();
-        
-        // Calculate current drawdown
-        double drawdown = getCurrentDrawdown();
-        
-        // Check if drawdown exceeds limit
-        if (drawdown > max_daily_drawdown_pct_) {
-            std::cerr << "Daily drawdown limit exceeded: " << drawdown << "% > " 
-                      << max_daily_drawdown_pct_ << "%" << std::endl;
-            trading_halted_.store(true);
-            return false;
-        }
-        
-        return true;
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Error checking risk limits: " << e.what() << std::endl;
+    // Check drawdown limit
+    if (current_drawdown_ > max_daily_drawdown_pct_) {
+        spdlog::error("Max drawdown exceeded: {} > {}", current_drawdown_, max_daily_drawdown_pct_);
+        trading_halted_ = true;
         return false;
     }
+
+    return true;
+}
+
+bool RiskManager::checkRiskLimits(bool is_buy, double size, double price) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    // First check basic risk limits
+    if (!checkRiskLimits()) {
+        return false;
+    }
+
+    // Check position size limit
+    if (size > max_position_size_) {
+        spdlog::error("Position size exceeds limit: {} > {}", size, max_position_size_);
+        return false;
+    }
+
+    // Check notional value limit (size * price)
+    double notional = size * price;
+    double max_notional = max_position_size_ * price;
+    if (notional > max_notional) {
+        spdlog::error("Notional value exceeds limit: {} > {}", notional, max_notional);
+        return false;
+    }
+
+    // Check if we're in drawdown sleep mode
+    if (is_sleeping_) {
+        spdlog::warn("Trading halted during drawdown sleep period");
+        return false;
+    }
+
+    return true;
 }
 
 void RiskManager::sleepOnDrawdown(std::chrono::seconds duration) {
-    if (!trading_halted_.load()) {
+    if (is_sleeping_) {
+        spdlog::warn("Already in drawdown sleep mode");
         return;
     }
-
-    std::cerr << "Trading halted due to drawdown. Sleeping for " 
-              << duration.count() << " seconds." << std::endl;
     
-    // Cancel all orders (this should be done by the ExecutionClient)
+    is_sleeping_ = true;
+    spdlog::info("Entering drawdown sleep for {} seconds", duration.count());
     
-    // Sleep for specified duration
-    std::this_thread::sleep_for(duration);
+    try {
+        // Reset metrics before sleeping
+        resetRiskMetrics();
+        
+        // Sleep for the specified duration
+        std::this_thread::sleep_for(duration);
+        
+    } catch (const std::exception& e) {
+        spdlog::error("Error during drawdown sleep: {}", e.what());
+    }
     
-    // Reset trading halt flag
-    trading_halted_.store(false);
-    
-    // Reset daily metrics
-    resetDailyMetrics();
+    is_sleeping_ = false;
+    spdlog::info("Drawdown sleep completed");
 }
 
 double RiskManager::getDailyPnL() const {
-    double current = getCurrentEquity();
-    double initial = initial_equity_.load();
-    if (initial <= 0) return 0.0;
-    return ((current - initial) / initial) * 100.0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return daily_pnl_;
 }
 
 double RiskManager::getCurrentDrawdown() const {
-    double peak = peak_equity_.load();
-    double current = getCurrentEquity();
-    if (peak <= 0) return 0.0;
-    return ((peak - current) / peak) * 100.0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return current_drawdown_;
 }
 
 double RiskManager::getCurrentEquity() const {
+    if (!redis_client_) return initial_equity_;
+    
     try {
-        auto val = redis_client_->get(EQUITY_KEY);
-        if (val) {
-            return std::stod(*val);
-        }
+        auto equity_str = redis_client_->get(EQUITY_KEY);
+        return equity_str ? std::stod(*equity_str) : initial_equity_;
     } catch (const std::exception& e) {
-        std::cerr << "Error getting current equity: " << e.what() << std::endl;
+        spdlog::error("Error getting current equity: {}", e.what());
+        return initial_equity_;
     }
-    return 0.0;
 }
 
 void RiskManager::updateEquityMetrics() {
-    double current = getCurrentEquity();
-    if (current <= 0) return;
-
-    // Update peak equity if needed
-    double peak = peak_equity_.load();
-    if (current > peak) {
-        peak_equity_.store(current);
-        try {
-            redis_client_->set(PEAK_EQUITY_KEY, std::to_string(current));
-        } catch (const std::exception& e) {
-            std::cerr << "Error updating peak equity: " << e.what() << std::endl;
+    if (!redis_client_) return;
+    
+    try {
+        double current_equity = getCurrentEquity();
+        
+        // Update peak equity if needed
+        if (current_equity > peak_equity_) {
+            peak_equity_ = current_equity;
+            redis_client_->set(PEAK_EQUITY_KEY, std::to_string(current_equity));
         }
+        
+        // Calculate and update drawdown
+        if (peak_equity_ > 0) {
+            current_drawdown_ = (peak_equity_ - current_equity) / peak_equity_;
+        }
+        
+    } catch (const std::exception& e) {
+        spdlog::error("Error updating equity metrics: {}", e.what());
     }
 }
 
 void RiskManager::resetDailyMetrics() {
-    double current = getCurrentEquity();
-    if (current <= 0) return;
-
-    // Store initial equity for the day
-    initial_equity_.store(current);
-    peak_equity_.store(current);
-
-    try {
-        redis_client_->set(INITIAL_EQUITY_KEY, std::to_string(current));
-        redis_client_->set(PEAK_EQUITY_KEY, std::to_string(current));
-    } catch (const std::exception& e) {
-        std::cerr << "Error resetting daily metrics: " << e.what() << std::endl;
+    std::lock_guard<std::mutex> lock(mutex_);
+    daily_pnl_ = 0.0;
+    current_drawdown_ = 0.0;
+    
+    if (redis_client_) {
+        try {
+            // Store current equity as initial equity for the new day
+            double current_equity = getCurrentEquity();
+            redis_client_->set(INITIAL_EQUITY_KEY, std::to_string(current_equity));
+            initial_equity_ = current_equity;
+        } catch (const std::exception& e) {
+            spdlog::error("Error resetting daily metrics: {}", e.what());
+        }
     }
+}
+
+void RiskManager::updateDailyPnL(double pnl) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    daily_pnl_ = pnl;
+    if (daily_pnl_ > max_daily_equity_) {
+        max_daily_equity_ = daily_pnl_;
+    }
+    updateDrawdown();
 }
 
 } // namespace bp 

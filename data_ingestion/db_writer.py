@@ -1,12 +1,13 @@
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime
 from decimal import Decimal
 import json
+import pandas as pd
 
-from config.settings import settings
+from .settings import settings
 from .models import Trade, OrderBook, Kline
 
 logger = logging.getLogger(__name__)
@@ -15,77 +16,109 @@ class PostgresWriter:
     """Handles writing market data to PostgreSQL database."""
 
     def __init__(self):
+        print("PostgresWriter init starting...")  # Debug print
         self.dsn = settings.database.dsn
+        print(f"DSN: {self.dsn}")  # Debug print
         self._conn = None
-        self._ensure_tables()
+        logger.info(f"Initializing PostgresWriter with DSN: {self.dsn}")
+        try:
+            print("Ensuring tables...")  # Debug print
+            self._ensure_tables()
+            print("Tables ensured successfully")  # Debug print
+        except Exception as e:
+            print(f"Error ensuring tables: {str(e)}")  # Debug print
+            raise
 
     def _get_conn(self):
         """Get a database connection, creating it if necessary."""
-        if self._conn is None or self._conn.closed:
-            self._conn = psycopg2.connect(self.dsn)
-        return self._conn
+        try:
+            if self._conn is None or self._conn.closed:
+                print("Creating new database connection...")  # Debug print
+                self._conn = psycopg2.connect(self.dsn)
+                print("Database connection established")  # Debug print
+            return self._conn
+        except psycopg2.Error as e:
+            print(f"Database connection error: {str(e)}")  # Debug print
+            logger.error(f"Failed to connect to database: {str(e)}")
+            raise
 
     def _ensure_tables(self):
         """Create necessary tables if they don't exist."""
-        conn = self._get_conn()
-        with conn.cursor() as cur:
-            # Trades table
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS trades (
-                    trade_id TEXT PRIMARY KEY,
-                    symbol TEXT NOT NULL,
-                    price NUMERIC NOT NULL,
-                    quantity NUMERIC NOT NULL,
-                    side TEXT NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    is_liquidation BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS idx_trades_symbol_timestamp ON trades(symbol, timestamp);
-            """)
+        logger.info("Ensuring required database tables exist...")
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                # Enable TimescaleDB extension
+                logger.info("Enabling TimescaleDB extension...")
+                cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
+                
+                # Trades table
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS trades (
+                        trade_id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        price NUMERIC NOT NULL,
+                        quantity NUMERIC NOT NULL,
+                        side TEXT NOT NULL,
+                        timestamp BIGINT NOT NULL,
+                        is_liquidation BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_trades_symbol_timestamp ON trades(symbol, timestamp);
+                """)
 
-            # Order book snapshots table
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS orderbook_snapshots (
-                    id SERIAL PRIMARY KEY,
-                    symbol TEXT NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    last_update_id BIGINT NOT NULL,
-                    bids JSONB NOT NULL,
-                    asks JSONB NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(symbol, last_update_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_ob_symbol_timestamp 
-                ON orderbook_snapshots(symbol, timestamp);
-            """)
+                # Order book snapshots table
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS orderbook_snapshots (
+                        symbol TEXT NOT NULL,
+                        timestamp BIGINT NOT NULL,
+                        last_update_id BIGINT NOT NULL,
+                        bids JSONB NOT NULL,
+                        asks JSONB NOT NULL,
+                        PRIMARY KEY (symbol, timestamp)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_ob_symbol_timestamp 
+                    ON orderbook_snapshots(symbol, timestamp);
+                """)
+                
+                # Convert orderbook_snapshots to TimescaleDB hypertable
+                cur.execute("""
+                    SELECT create_hypertable('orderbook_snapshots', 'timestamp', 
+                                           if_not_exists => TRUE,
+                                           migrate_data => TRUE);
+                """)
 
-            # Klines table
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS klines (
-                    symbol TEXT NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    interval TEXT NOT NULL,
-                    open NUMERIC NOT NULL,
-                    high NUMERIC NOT NULL,
-                    low NUMERIC NOT NULL,
-                    close NUMERIC NOT NULL,
-                    volume NUMERIC NOT NULL,
-                    trade_count INTEGER NOT NULL,
-                    closed BOOLEAN NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (symbol, interval, timestamp)
-                );
-                CREATE INDEX IF NOT EXISTS idx_klines_lookup 
-                ON klines(symbol, interval, timestamp DESC);
-            """)
+                # Klines table
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS klines (
+                        symbol TEXT NOT NULL,
+                        timestamp BIGINT NOT NULL,
+                        interval TEXT NOT NULL,
+                        open NUMERIC NOT NULL,
+                        high NUMERIC NOT NULL,
+                        low NUMERIC NOT NULL,
+                        close NUMERIC NOT NULL,
+                        volume NUMERIC NOT NULL,
+                        trade_count INTEGER NOT NULL,
+                        closed BOOLEAN NOT NULL,
+                        PRIMARY KEY (symbol, interval, timestamp)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_klines_lookup 
+                    ON klines(symbol, interval, timestamp DESC);
+                """)
 
-            conn.commit()
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to ensure tables: {str(e)}")
+            raise
 
     def write_trade(self, trade: Trade):
         """Write a single trade to the database."""
         conn = self._get_conn()
         with conn.cursor() as cur:
+            # Convert datetime to millisecond timestamp
+            timestamp_ms = int(trade.timestamp.timestamp() * 1000)
+            
             cur.execute("""
                 INSERT INTO trades (
                     trade_id, symbol, price, quantity, side, 
@@ -94,7 +127,7 @@ class PostgresWriter:
                 ON CONFLICT (trade_id) DO NOTHING
             """, (
                 trade.trade_id, trade.symbol, str(trade.price), 
-                str(trade.quantity), trade.side, trade.timestamp,
+                str(trade.quantity), trade.side, timestamp_ms,
                 trade.is_liquidation
             ))
             conn.commit()
@@ -108,7 +141,7 @@ class PostgresWriter:
         with conn.cursor() as cur:
             values = [
                 (t.trade_id, t.symbol, str(t.price), str(t.quantity),
-                 t.side, t.timestamp, t.is_liquidation)
+                 t.side, int(t.timestamp.timestamp() * 1000), t.is_liquidation)
                 for t in trades
             ]
             execute_values(cur, """
@@ -125,20 +158,23 @@ class PostgresWriter:
         conn = self._get_conn()
         with conn.cursor() as cur:
             # Convert Decimal objects to strings for JSON serialization
-            bids = {str(k): str(v) for k, v in orderbook.bids.items()}
-            asks = {str(k): str(v) for k, v in orderbook.asks.items()}
+            bids = [[str(price), str(qty)] for price, qty in orderbook.bids.items()]
+            asks = [[str(price), str(qty)] for price, qty in orderbook.asks.items()]
+            
+            # Convert datetime to millisecond timestamp
+            timestamp_ms = int(orderbook.timestamp.timestamp() * 1000)
             
             cur.execute("""
                 INSERT INTO orderbook_snapshots (
                     symbol, timestamp, last_update_id, bids, asks
                 ) VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (symbol, last_update_id) DO UPDATE
-                SET timestamp = EXCLUDED.timestamp,
+                ON CONFLICT (symbol, timestamp) DO UPDATE
+                SET last_update_id = EXCLUDED.last_update_id,
                     bids = EXCLUDED.bids,
                     asks = EXCLUDED.asks
             """, (
                 orderbook.symbol,
-                orderbook.timestamp,
+                timestamp_ms,
                 orderbook.last_update_id,
                 json.dumps(bids),
                 json.dumps(asks)
@@ -149,6 +185,9 @@ class PostgresWriter:
         """Write a single kline/candlestick to the database."""
         conn = self._get_conn()
         with conn.cursor() as cur:
+            # Convert datetime to millisecond timestamp
+            timestamp_ms = int(kline.timestamp.timestamp() * 1000)
+            
             cur.execute("""
                 INSERT INTO klines (
                     symbol, timestamp, interval, open, high, low,
@@ -164,7 +203,7 @@ class PostgresWriter:
                     trade_count = EXCLUDED.trade_count,
                     closed = EXCLUDED.closed
             """, (
-                kline.symbol, kline.timestamp, kline.interval,
+                kline.symbol, timestamp_ms, kline.interval,
                 str(kline.open), str(kline.high), str(kline.low),
                 str(kline.close), str(kline.volume),
                 kline.trade_count, kline.closed
@@ -191,7 +230,7 @@ class PostgresWriter:
             return [
                 Kline(
                     symbol=row[0],
-                    timestamp=row[1],
+                    timestamp=datetime.fromtimestamp(row[1] / 1000),
                     interval=row[2],
                     open=Decimal(str(row[3])),
                     high=Decimal(str(row[4])),
@@ -203,6 +242,143 @@ class PostgresWriter:
                 )
                 for row in reversed(rows)  # Reverse to get chronological order
             ]
+
+    def get_klines_in_range(
+        self,
+        symbol: str,
+        interval: str,
+        start_time: datetime,
+        end_time: datetime
+    ) -> List[Dict]:
+        """
+        Retrieve klines within a specified time range.
+        
+        Args:
+            symbol: Trading symbol
+            interval: Kline interval (e.g., "1m", "5m")
+            start_time: Start of time range
+            end_time: End of time range
+            
+        Returns:
+            List of kline dictionaries
+        """
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            # Convert datetime to millisecond timestamps for comparison
+            start_ms = int(start_time.timestamp() * 1000)
+            end_ms = int(end_time.timestamp() * 1000)
+            
+            cur.execute("""
+                SELECT 
+                    symbol,
+                    timestamp,
+                    interval,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    trade_count,
+                    closed
+                FROM klines
+                WHERE symbol = %s 
+                AND interval = %s
+                AND timestamp BETWEEN %s AND %s
+                ORDER BY timestamp ASC
+            """, (symbol, interval, start_ms, end_ms))
+            
+            rows = cur.fetchall()
+            
+            return [
+                {
+                    'symbol': row[0],
+                    'timestamp': datetime.fromtimestamp(row[1] / 1000),
+                    'interval': row[2],
+                    'open': str(row[3]),
+                    'high': str(row[4]),
+                    'low': str(row[5]),
+                    'close': str(row[6]),
+                    'volume': str(row[7]),
+                    'trade_count': row[8],
+                    'closed': row[9]
+                }
+                for row in rows
+            ]
+
+    def get_orderbook_in_range(self, symbol: str, start_time: datetime, 
+                              end_time: datetime, sample_interval: str = '1 minute') -> pd.DataFrame:
+        """
+        Get sampled orderbook data within a time range.
+        
+        Args:
+            symbol: Trading pair symbol
+            start_time: Start of time range (datetime)
+            end_time: End of time range (datetime)
+            sample_interval: Sampling interval (e.g. '1 minute', '5 minutes')
+            
+        Returns:
+            DataFrame with columns: timestamp, bid_price, bid_quantity, ask_price, ask_quantity
+        """
+        print(f"Fetching orderbook data from {start_time} to {end_time}")
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            # Convert datetime to millisecond timestamps for comparison
+            start_ms = int(start_time.timestamp() * 1000)
+            end_ms = int(end_time.timestamp() * 1000)
+            
+            # First count total records for progress tracking
+            cur.execute("""
+                SELECT COUNT(*) 
+                FROM orderbook_snapshots 
+                WHERE symbol = %s 
+                AND timestamp BETWEEN %s AND %s
+            """, (symbol, start_ms, end_ms))
+            total_records = cur.fetchone()[0]
+            print(f"Found {total_records} orderbook records to process")
+            
+            # Updated query to handle the correct JSON structure
+            cur.execute("""
+                SELECT 
+                    timestamp,
+                    COALESCE((bids->0->>'price')::NUMERIC, NULL) as bid_price,
+                    COALESCE((bids->0->>'quantity')::NUMERIC, NULL) as bid_quantity,
+                    COALESCE((asks->0->>'price')::NUMERIC, NULL) as ask_price,
+                    COALESCE((asks->0->>'quantity')::NUMERIC, NULL) as ask_quantity
+                FROM orderbook_snapshots
+                WHERE symbol = %s 
+                AND timestamp BETWEEN %s AND %s
+                AND (bids->0->>'price') IS NOT NULL 
+                AND (asks->0->>'price') IS NOT NULL
+                ORDER BY timestamp;
+            """, (symbol, start_ms, end_ms))
+            
+            print("Fetching records from database...")
+            columns = ['timestamp', 'bid_price', 'bid_quantity', 'ask_price', 'ask_quantity']
+            data = cur.fetchall()
+            print(f"Retrieved {len(data)} records")
+            
+        print("Converting to DataFrame...")
+        df = pd.DataFrame(data, columns=columns)
+        if not df.empty:
+            # Convert millisecond timestamps to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
+            # Convert interval string to pandas frequency string
+            freq = sample_interval.lower().replace(' minutes', 'T').replace(' minute', 'T')
+            freq = freq.replace('hour', 'H').replace('day', 'D')
+            
+            # Resample to desired interval
+            print(f"Resampling data to {freq} intervals...")
+            df = df.resample(freq).agg({
+                'bid_price': 'last',
+                'bid_quantity': 'last',
+                'ask_price': 'last',
+                'ask_quantity': 'last'
+            }).dropna()
+            print(f"Final DataFrame shape: {df.shape}")
+            
+        return df
 
     def close(self):
         """Close the database connection."""

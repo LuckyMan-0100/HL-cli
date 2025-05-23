@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/penrose/HL-cli/cpp_exec/cmake_install.cmake",
+		"/Users/penrose/HL-cli/cpp_exec/hiredis_build/cmake_install.cmake",
+		"/Users/penrose/HL-cli/cpp_exec/redis_plus_plus_build/cmake_install.cmake",
+		"/Users/penrose/HL-cli/cpp_exec/redis_plus_plus_build/test/cmake_install.cmake",
+		"/Users/penrose/HL-cli/cpp_exec/backpack_sdk_build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

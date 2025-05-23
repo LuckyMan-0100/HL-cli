@@ -1,10 +1,61 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+*.pkl
+*.joblib
+
+# Environment variables
+.env
+.env.*
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Project specific
+data/
+models/
+logs/
+metrics/
+*.parquet
+*.csv
+!requirements.txt
 
 # Distribution / packaging
 .Python
@@ -167,4 +218,10 @@ Thumbs.db
 # Project specific
 *.log
 *.sqlite
-*.db 
+*.db
+
+# Compiled binary
+backpack_data_service
+
+# Redis plus plus untracked content
+redis-plus-plus/ 

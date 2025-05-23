@@ -1,11 +1,13 @@
 #include <iostream>
-#include "redis_subscriber.hpp"
 #include "exec_bridge.hpp"
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <thread>
 #include <chrono>
 #include <csignal>
 #include <cstdlib> // For std::getenv
+#include <algorithm>
+#include <cctype>
 
 namespace {
     // Global flag to signal termination
@@ -32,14 +34,40 @@ int main(int argc, char *argv[]) {
     std::signal(SIGTERM, signal_handler);
 
     // Set up logging
-    spdlog::set_level(spdlog::level::debug); // Set default log level
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    // Example: Set pattern if not already done, or keep existing pattern
+    console_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v"); 
+    auto logger = std::make_shared<spdlog::logger>("multi_sink", console_sink);
+    spdlog::register_logger(logger);
+    spdlog::set_default_logger(logger); // Ensure this is the default for all subsequent spdlog calls
+    spdlog::set_level(spdlog::level::trace); // SET TO TRACE LEVEL
+    spdlog::flush_on(spdlog::level::info); // Optional: flush on info or higher
+
     spdlog::info("Starting HL-cli...");
 
     try {
         // Get configuration from environment variables
         std::string api_key = getenv_required("BACKPACK_API_KEY");
         std::string api_secret_b64 = getenv_required("BACKPACK_API_SECRET_B64");
-        std::string symbol = getenv_required("TRADING_SYMBOL"); // e.g., "SOL_USDC"
+        std::string raw_symbol = getenv_required("TRADING_SYMBOL"); // e.g., "SOL_USDC_PERP"
+        std::string symbol = raw_symbol;
+        // Remove inline comments
+        auto hash_pos = symbol.find('#');
+        if (hash_pos != std::string::npos) symbol = symbol.substr(0, hash_pos);
+        // Trim whitespace
+        auto ltrim = [](std::string &s) {
+            s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+        };
+        auto rtrim = [](std::string &s) {
+            s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), s.end());
+        };
+        ltrim(symbol);
+        rtrim(symbol);
+        // Strip surrounding quotes
+        if (symbol.size() >= 2 && ((symbol.front() == '"' && symbol.back() == '"') || (symbol.front() == '\'' && symbol.back() == '\''))) {
+            symbol = symbol.substr(1, symbol.size() - 2);
+        }
+
         // Optional: Get max drawdown from env, default to 2%
         double max_drawdown = 0.02;
         const char* drawdown_env = std::getenv("MAX_DAILY_DRAWDOWN_PCT");
@@ -53,25 +81,16 @@ int main(int argc, char *argv[]) {
         }
 
         spdlog::info("Initializing Execution Client for symbol: {}", symbol);
-        // Initialize ExecutionClient with credentials and symbol
-        bp::DefaultExecutionClient exec_client(api_key, api_secret_b64, symbol, max_drawdown);
+        // Explicitly pass the ML signal file path
+        std::string signal_file = "/Users/penrose/HL-cli/signal.json";
+        bp::DefaultExecutionClient exec_client(api_key, api_secret_b64, symbol, max_drawdown, signal_file);
         
-        spdlog::info("Initializing Redis Subscriber...");
-        bp::RedisSubscriber redis_subscriber(exec_client);
+        // Setup signal handler for graceful shutdown
+        exec_client.setupSignalHandler();
 
-        // Start Redis subscriber in a separate thread
-        std::thread redis_thread([&redis_subscriber]() {
-            try {
-                redis_subscriber.start(); // This blocks until stopped
-            } catch (const std::exception& e) {
-                spdlog::critical("Redis subscriber thread failed: {}", e.what());
-                g_signal_status = SIGTERM; // Signal main thread to exit
-            }
-        });
+        spdlog::info("Application started. Press Ctrl+C to exit...");
 
-        spdlog::info("Application started. Waiting for termination signal (Ctrl+C)...");
-
-        // Wait for termination signal
+        // Main loop - wait for termination signal
         while (g_signal_status == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             // Main thread can perform other tasks or just sleep
@@ -79,12 +98,8 @@ int main(int argc, char *argv[]) {
 
         spdlog::info("Termination signal ({}) received. Shutting down...", g_signal_status);
 
-        // Clean shutdown
-        redis_subscriber.stop(); // Signal the subscriber to stop consuming
-        if (redis_thread.joinable()) {
-            redis_thread.join(); // Wait for the subscriber thread to finish
-        }
-        // DefaultExecutionClient destructor handles its cleanup (IO thread, etc.)
+        // Clean shutdown 
+        exec_client.stop(); // Signal the client to stop
 
         spdlog::info("Shutdown complete.");
 

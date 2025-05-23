@@ -11,11 +11,7 @@ namespace bp {
 
 class RiskManager {
 public:
-    explicit RiskManager(double max_daily_drawdown_pct = 0.02)
-        : max_daily_drawdown_pct_(max_daily_drawdown_pct)
-        , daily_pnl_(0.0)
-        , current_drawdown_(0.0)
-        , is_sleeping_(false) {}
+    explicit RiskManager(double max_daily_drawdown_pct = 0.02);
 
     // Disable copy/move
     RiskManager(const RiskManager&) = delete;
@@ -24,31 +20,19 @@ public:
     RiskManager& operator=(RiskManager&&) = delete;
 
     // Core risk checks
-    bool checkRiskLimits() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return !is_sleeping_ && current_drawdown_ <= max_daily_drawdown_pct_;
-    }
-
-    void sleepOnDrawdown(std::chrono::seconds duration) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        is_sleeping_ = true;
-        std::this_thread::sleep_for(duration);
-        resetRiskMetrics();
-        is_sleeping_ = false;
-    }
+    bool checkRiskLimits();
+    bool checkRiskLimits(bool is_buy, double size, double price);
+    void sleepOnDrawdown(std::chrono::seconds duration);
 
     // Accessors
-    double getDailyPnL() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return daily_pnl_;
-    }
-
-    double getCurrentDrawdown() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return current_drawdown_;
-    }
-
+    double getDailyPnL() const;
+    double getCurrentDrawdown() const;
     bool isHalted() const { return trading_halted_.load(); }
+
+    // Risk limits
+    double getMaxDailyLoss() const { return max_daily_drawdown_pct_ * initial_equity_; }
+    double getMaxDrawdown() const { return max_daily_drawdown_pct_; }
+    double getMaxPositionSize() const { return max_position_size_; }
 
     void updatePnL(double pnl_change) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -67,14 +51,23 @@ public:
         current_drawdown_ = 0.0;
     }
 
+    // PnL tracking
+    void updateDailyPnL(double pnl);
+
 private:
+    void updateDrawdown() {
+        if (max_daily_equity_ > 0) {
+            current_drawdown_ = (max_daily_equity_ - daily_pnl_) / max_daily_equity_;
+        }
+    }
+
     // Risk parameters
     const double max_daily_drawdown_pct_;
     
     // State
     std::atomic<bool> trading_halted_{false};
-    std::atomic<double> initial_equity_{0.0};
-    std::atomic<double> peak_equity_{0.0};
+    double initial_equity_{100000.0};  // Default initial equity
+    double peak_equity_{0.0};
     
     // Redis client for equity tracking
     std::unique_ptr<sw::redis::Redis> redis_client_;
@@ -88,10 +81,14 @@ private:
     static constexpr const char* EQUITY_KEY = "account:equity";
     static constexpr const char* INITIAL_EQUITY_KEY = "account:initial_equity";
     static constexpr const char* PEAK_EQUITY_KEY = "account:peak_equity";
+    static constexpr const char* REDIS_HOST = "localhost";
+    static constexpr int REDIS_PORT = 6970;
 
-    double daily_pnl_;
-    double current_drawdown_;
-    std::atomic<bool> is_sleeping_;
+    double daily_pnl_{0.0};
+    double max_daily_equity_{0.0};
+    double current_drawdown_{0.0};
+    std::atomic<bool> is_sleeping_{false};
+    double max_position_size_{1000.0}; // Default max position size
     mutable std::mutex mutex_;
 };
 
