@@ -1,13 +1,13 @@
 {
-    "signal_id": "a09e48fe-45e2-4996-b039-3f0522667f0b",
-    "timestamp": 1748032950032,
+    "signal_id": "265eccc6-4cd0-4d26-919f-cc42c15d99ce",
+    "timestamp": 1749010446338,
     "symbol": "SOL_USDC_PERP",
     "signal_type": "buy",
-    "confidence": 0.7997,
+    "confidence": 0.6203,
     "order_quantity_config": {
         "type": "Market",
         "quantity_usd": null,
-        "quantity": "0.22"
+        "quantity": "0.15"
     },
     "conditional_order_params": {}
 }

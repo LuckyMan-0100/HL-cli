@@ -174,7 +174,7 @@ class PaperTradingRunner:
             logger.info(f"Attempting to start Execution Bridge: {EXEC_BRIDGE_PATH}")
             exec_bridge_proc = subprocess.Popen(
                 [str(EXEC_BRIDGE_PATH)], 
-                cwd=WORKSPACE_ROOT, 
+                cwd=Path(EXEC_BRIDGE_PATH).parent,  # Run from build directory where the .dylib is located
                 env=exec_bridge_env
                 # stdout=subprocess.PIPE, stderr=subprocess.PIPE # Temporarily commented out for direct console output
             )

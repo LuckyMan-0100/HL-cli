@@ -334,10 +334,10 @@ public:
     std::mutex openOrdersMutex_;
     static constexpr std::size_t MAX_OPEN_ORDERS = 150;
     static constexpr std::chrono::seconds MAX_ORDER_AGE = std::chrono::seconds(30);
-    static constexpr std::chrono::seconds SWEEP_INTERVAL = std::chrono::seconds(5);
+    static constexpr std::chrono::seconds SWEEP_INTERVAL = std::chrono::seconds(15);
     std::thread orderSweeperThread_;
     // Safety mechanism methods
-    void enforceOpenOrderLimit(const std::string& symbol_to_check_and_cancel);
+    void enforceOpenOrderLimit(const std::string& symbol_to_check_and_cancel, std::unique_lock<std::mutex>& open_orders_lock);
     void sweeperThreadLogic();
     bool cancelAllOrdersForSymbol(const std::string& symbol);
     bool cancelSingleOrder(const std::string& order_id, const std::string& symbol);
@@ -356,9 +356,19 @@ public:
     // WebSocket methods
     void bootstrapOrderCache();
     void processSdkOrderUpdate(const backpack::Order& sdk_order);
+    void onUserFill(const backpack::Trade& sdk_trade);
 
     void initialize_order_ws();
     void stop_order_ws();
+
+    // TEST METHOD - Public wrapper for testing execute_signed_request
+    nlohmann::json test_execute_signed_request(RestClass rest_class,
+                                              const std::string& method,
+                                              const std::string& endpoint,
+                                              const std::string& instruction,
+                                              const nlohmann::json& params) {
+        return execute_signed_request(rest_class, method, endpoint, instruction, params);
+    }
 
 private:
     // Redis pub/sub handling

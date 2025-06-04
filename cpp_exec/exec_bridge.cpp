@@ -58,6 +58,29 @@ namespace bp {
 
 using json = nlohmann::json;
 
+// Helper struct for ScopedUnlock
+struct ScopedUnlock {
+    std::unique_lock<std::mutex>& lock_;
+    bool initially_owned_;
+
+    ScopedUnlock(std::unique_lock<std::mutex>& lock) : lock_(lock), initially_owned_(lock_.owns_lock()) {
+        if (initially_owned_) {
+            lock_.unlock();
+        }
+    }
+
+    ~ScopedUnlock() {
+        if (initially_owned_ && !lock_.owns_lock()) { // Re-lock only if it was owned and is not currently locked by us
+            lock_.lock();
+        }
+    }
+    // Delete copy and move constructors/assignment operators
+    ScopedUnlock(const ScopedUnlock&) = delete;
+    ScopedUnlock& operator=(const ScopedUnlock&) = delete;
+    ScopedUnlock(ScopedUnlock&&) = delete;
+    ScopedUnlock& operator=(ScopedUnlock&&) = delete;
+};
+
 // Helper function to format a double to a string with specified precision
 std::string format_double_to_string(double val, int precision) {
     std::ostringstream oss;
@@ -239,7 +262,7 @@ DefaultExecutionClient::DefaultExecutionClient(
         sw::redis::ConnectionOptions connection_options;
         connection_options.host = "localhost"; // Consider making these configurable
         connection_options.port = REDIS_PORT;  // Use the constant from header
-        connection_options.keep_alive = false; // Explicitly set
+        connection_options.keep_alive = true; // Explicitly set to true
         connection_options.connect_timeout = std::chrono::milliseconds(500); // Explicitly set
         connection_options.socket_timeout = std::chrono::milliseconds(0);  // Explicitly set to 0 (was 500)
         spdlog::info("DefaultExecutionClient constructor: Redis connection options set (Host: {}, Port: {}, KeepAlive: {}, ConnectTimeout: 500ms, SocketTimeout: 0ms).",
@@ -292,11 +315,11 @@ DefaultExecutionClient::DefaultExecutionClient(
             spdlog::info("Trade event log (tradelog.jsonl) opened successfully.");
         }
         
-        // Start order sweeper thread for open order safety
-        // The user wants sweeperThreadLogic to be called here
+        // Start order sweeper thread for open order safety  
+        // Stagger the startup to avoid coinciding with other 30-second timers
         orderSweeperThread_ = std::thread([this] { 
-            spdlog::info("Order sweeper thread started for symbol: {}. Waiting 30 seconds before starting sweeper logic...", trading_symbol_);
-            std::this_thread::sleep_for(std::chrono::seconds(30));
+            spdlog::info("Order sweeper thread started for symbol: {}. Waiting 45 seconds before starting sweeper logic (staggered timing)...", trading_symbol_);
+            std::this_thread::sleep_for(std::chrono::seconds(45));  // Changed from 30 to 45 seconds
             if (running_) {  // Check if still running before starting logic
                 this->sweeperThreadLogic(); 
             } else {
@@ -304,7 +327,7 @@ DefaultExecutionClient::DefaultExecutionClient(
             }
         }); 
         orderSweeperThread_.detach();
-        spdlog::info("DefaultExecutionClient constructor: Order sweeper thread started with 30-second delay.");
+        spdlog::info("DefaultExecutionClient constructor: Order sweeper thread started with 45-second staggered delay.");
         
         spdlog::info("DefaultExecutionClient initialized successfully");
     } catch (const sw::redis::IoError& e) {
@@ -1095,9 +1118,9 @@ json DefaultExecutionClient::execute_signed_request(
         string_to_sign += "&window=" + window_str;
 
         // 3. Determine actual_http_request_body
-        // Body is ONLY for POST and PUT requests.
-        // GET and DELETE requests MUST have an empty body.
-        if (http_method == "POST" || http_method == "PUT") {
+        // Body is for POST, PUT, and DELETE requests (Backpack API expects JSON payload for DELETE).
+        // GET requests MUST have an empty body.
+        if (http_method == "POST" || http_method == "PUT" || http_method == "DELETE") {
             if (!params.is_null() && params.is_object()) {
                 actual_http_request_body = params.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict);
             } else {
@@ -1105,7 +1128,7 @@ json DefaultExecutionClient::execute_signed_request(
                 spdlog::warn("[exec_bridge] Params for {} to {} instruction '{}' was null/non-object. Sending '{{}}' as body.", http_method, endpoint, instruction);
             }
         }
-        // For GET and DELETE, actual_http_request_body remains empty by default.
+        // For GET, actual_http_request_body remains empty by default.
         
         spdlog::debug("[exec_bridge] String to sign for instruction '{}': {}", instruction, string_to_sign);
         std::string signature = sign_request(string_to_sign); 
@@ -1121,17 +1144,17 @@ json DefaultExecutionClient::execute_signed_request(
         long http_response_code = 0;
         const std::string base_url = "https://api.backpack.exchange";
 
-        std::string query_params_for_get_delete_url_str; // Only for GET/DELETE URL
+        std::string query_params_for_get_delete_url_str; // Only for GET URL
 
         // Determine request body and if Content-Type is needed
         // std::string request_body_payload_str; // Replaced by actual_http_request_body
         bool should_send_content_type = false;
 
-        if (http_method == "GET" || http_method == "DELETE") {
-            // For GET and ALL DELETE requests, params (if any) go into the query string.
+        if (http_method == "GET") {
+            // For GET requests, params (if any) go into the query string.
             query_params_for_get_delete_url_str = params_component_for_sig; 
         }
-        // For POST/PUT, query_params_for_get_delete_url_str remains empty; params are in the body.
+        // For POST/PUT/DELETE, query_params_for_get_delete_url_str remains empty; params are in the body.
 
         if (curl) {
             std::string full_url = base_url + endpoint;
@@ -1156,7 +1179,7 @@ json DefaultExecutionClient::execute_signed_request(
             
             // Configure method, body, and Content-Type
             if (http_method == "POST" || http_method == "PUT") {
-                should_send_content_type = true; // Only POST/PUT get Content-Type: application/json
+                should_send_content_type = true; // POST/PUT get Content-Type: application/json
                 
                 if (http_method == "POST") {
                     curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -1167,24 +1190,18 @@ json DefaultExecutionClient::execute_signed_request(
                 spdlog::debug("{} body: {}", http_method, actual_http_request_body);
 
             } else if (http_method == "DELETE") {
+                should_send_content_type = true; // Backpack API requires Content-Type even for DELETE
                 curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-                // ALL DELETE requests have an empty body. Parameters are in the query string.
-                // The actual_http_request_body will be empty here.
-                // No need to set CURLOPT_POSTFIELDS if the body is empty, 
-                // but it's harmless if actual_http_request_body is indeed "".
-                // For clarity, ensure no body is sent explicitly for DELETE.
-                // curl_easy_setopt(curl, CURLOPT_POSTFIELDS, ""); // This might be problematic if not needed.
-                // If actual_http_request_body is already guaranteed empty, this section is simpler.
-                spdlog::debug("DELETE request for {}. Body is empty. Query params: {}", endpoint, query_params_for_get_delete_url_str);
+                // Backpack API expects JSON payload in the body for DELETE requests
+                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, actual_http_request_body.c_str());
+                spdlog::debug("DELETE request for {}. Body: {}", endpoint, actual_http_request_body);
             }
             // For GET, no special body/method options needed beyond URL.
 
             if (should_send_content_type) {
                 headers = curl_slist_append(headers, "Content-Type: application/json");
             } else {
-                // Ensure Content-Type is NOT sent for GET/DELETE, even if it was somehow added to headers before.
-                // This is typically handled by not setting it, but being explicit if necessary:
-                // headers = curl_slist_remove(headers, "Content-Type"); // curl_slist_remove is not a function, manual management or ensure it's not added.
+                // Ensure Content-Type is NOT sent for GET requests only
             }
 
             curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -1830,34 +1847,79 @@ void DefaultExecutionClient::bootstrapOrderCache() {
     // bootstrap_in_progress_.store(false, std::memory_order_release); // This was moved to the calling lambda in setupOrderWebSocket
 }
 
-void DefaultExecutionClient::sweeperThread() {
+void DefaultExecutionClient::sweeperThreadLogic() {
+    spdlog::info("Sweeper thread logic started for symbol: {} (improved logic - cancels ALL orders older than {} seconds)", trading_symbol_, MAX_ORDER_AGE.count());
+    
     while (running_) {
-        std::this_thread::sleep_for(SWEEP_INTERVAL);
-        std::vector<RestingOrder> stale;
+        std::vector<RestingOrder> stale_orders;
+        
+        // Find all orders older than MAX_ORDER_AGE (not just exactly that age)
         {
             std::lock_guard<std::mutex> lk(openOrdersMutex_);
             auto now = std::chrono::steady_clock::now();
+            
             for (const auto& kv : openOrders_) {
-                if (now - kv.second.placedAt > MAX_ORDER_AGE) {
-                    stale.push_back(kv.second);
+                const RestingOrder& order = kv.second;
+                auto order_age = now - order.placedAt;
+                
+                // Cancel ALL orders older than MAX_ORDER_AGE, not just exactly MAX_ORDER_AGE
+                if (order_age > MAX_ORDER_AGE && order.symbol == trading_symbol_) {
+                    stale_orders.push_back(order);
+                    spdlog::info("Found stale order: ID={}, Symbol={}, Age={}s (limit={}s)", 
+                        order.orderId, 
+                        order.symbol,
+                        std::chrono::duration_cast<std::chrono::seconds>(order_age).count(),
+                        MAX_ORDER_AGE.count()
+                    );
                 }
             }
         }
-        for (const auto& ord : stale) {
+        
+        // If we have many stale orders, use cancel-all instead of individual cancels
+        if (stale_orders.size() >= 10) {
+            spdlog::warn("Found {} stale orders for symbol {} - using cancel-all approach", stale_orders.size(), trading_symbol_);
             try {
-                cancel_order(ord.symbol, ord.orderId);
-                std::lock_guard<std::mutex> lk(openOrdersMutex_);
-                openOrders_.erase(ord.orderId);
+                bool success = cancelAllOrdersForSymbol(trading_symbol_);
+                if (success) {
+                    spdlog::info("Successfully cancelled all orders for symbol {} (bulk approach)", trading_symbol_);
+                } else {
+                    spdlog::error("Failed to cancel all orders for symbol {} (bulk approach)", trading_symbol_);
+                }
             } catch (const std::exception& ex) {
-                spdlog::error("Failed to cancel stale order {}: {}", ord.orderId, ex.what());
+                spdlog::error("Exception during bulk cancel for symbol {}: {}", trading_symbol_, ex.what());
+            }
+        } else {
+            // Cancel individual stale orders
+            for (const auto& ord : stale_orders) {
+                try {
+                    spdlog::info("Cancelling stale order: ID={}, Symbol={}", ord.orderId, ord.symbol);
+                    bool success = cancel_order(ord.symbol, ord.orderId);
+                    if (success) {
+                        // Remove from local openOrders_ map immediately
+                        // The WebSocket should also update this, but this ensures consistency
+                        std::lock_guard<std::mutex> lk(openOrdersMutex_);
+                        openOrders_.erase(ord.orderId);
+                        spdlog::info("Successfully cancelled and removed stale order: {}", ord.orderId);
+                    } else {
+                        spdlog::warn("Failed to cancel stale order: {}", ord.orderId);
+                    }
+                } catch (const std::exception& ex) {
+                    spdlog::error("Exception cancelling stale order {}: {}", ord.orderId, ex.what());
+                }
             }
         }
+        
+        // Log sweeper status periodically
+        if (stale_orders.size() > 0) {
+            std::lock_guard<std::mutex> lk(openOrdersMutex_);
+            spdlog::info("Sweeper completed for symbol {}. Processed {} stale orders. Remaining open orders: {}", 
+                trading_symbol_, stale_orders.size(), openOrders_.size());
+        }
+        
+        // Sleep for SWEEP_INTERVAL before next sweep
+        std::this_thread::sleep_for(SWEEP_INTERVAL);
     }
-}
-
-void DefaultExecutionClient::sweeperThreadLogic() {
-    spdlog::info("Sweeper thread logic started for symbol: {}", trading_symbol_);
-    // ... existing sweeperThreadLogic code ...
+    
     spdlog::info("Sweeper thread logic stopped for symbol: {}", trading_symbol_);
 }
 
@@ -1945,175 +2007,57 @@ bool DefaultExecutionClient::cancelAllOrdersForSymbol(const std::string& symbol)
 }
 
 // Implementation for enforceOpenOrderLimit
-void DefaultExecutionClient::enforceOpenOrderLimit(const std::string& symbol_to_check) {
-    // This function might be called from within a lock on openOrdersMutex_ (e.g. after adding a NEW order)
-    // or from an order placement path *before* the order is in openOrders_ via WS.
-    // If it calls cancelAllOrdersForSymbol, that function will acquire openOrdersMutex_.
-    // To avoid recursive locking or holding locks too long, this function should ideally operate with current_size
-    // and then call cancellation (which locks) if needed, or be called when openOrdersMutex_ is NOT held.
-    // For simplicity, let's assume it's called when the lock is NOT held by the caller.
-
+void DefaultExecutionClient::enforceOpenOrderLimit(const std::string& symbol_to_check, std::unique_lock<std::mutex>& open_orders_lock) {
     if (symbol_to_check.empty() || symbol_to_check != trading_symbol_) {
         spdlog::warn("enforceOpenOrderLimit called for mismatching or empty symbol: '{}'. Instance handles: '{}'. Skipping.", symbol_to_check, trading_symbol_);
         return;
     }
 
+    if (!open_orders_lock.owns_lock()) {
+        spdlog::error("enforceOpenOrderLimit called without the lock being held. This is a programming error.");
+        // Optionally, try to lock it here if that's a desired fallback, but indicates design issue.
+        // For now, just return to prevent further issues.
+        return;
+    }
+
     std::size_t current_open_orders_for_symbol = 0;
-    {
-        std::lock_guard<std::mutex> lock(openOrdersMutex_);
-        for (const auto& pair : openOrders_) {
-            if (pair.second.symbol == symbol_to_check) {
-                current_open_orders_for_symbol++;
-            }
+    // openOrdersMutex_ is ALREADY HELD by the caller (processSdkOrderUpdate) via open_orders_lock.
+    // Do not re-lock for counting.
+    for (const auto& pair : openOrders_) {
+        if (pair.second.symbol == symbol_to_check) {
+            current_open_orders_for_symbol++;
         }
     }
-    //spdlog::debug("Enforcing open order limit for symbol {}. Current open: {}, Max open: {}", 
-    //              symbol_to_check, current_open_orders_for_symbol, MAX_OPEN_ORDERS);
 
     if (current_open_orders_for_symbol >= MAX_OPEN_ORDERS) {
-        spdlog::warn("CIRCUIT BREAKER TRIPPED for symbol {}: Number of open orders ({}) >= MAX_OPEN_ORDERS ({}). Initiating cancel all orders for this symbol.", 
+        spdlog::warn("CIRCUIT BREAKER TRIPPED for symbol {}: Number of open orders ({}) >= MAX_OPEN_ORDERS ({}). Initiating cancel all orders for this symbol.",
                      symbol_to_check, current_open_orders_for_symbol, MAX_OPEN_ORDERS);
-        bool cancel_all_success = cancelAllOrdersForSymbol(symbol_to_check);
+        
+        bool cancel_all_success = false;
+        {
+            ScopedUnlock scoped_unlock(open_orders_lock); // Unlocks open_orders_lock here
+            try {
+                cancel_all_success = cancelAllOrdersForSymbol(symbol_to_check); // This will now acquire its own lock internally
+            } catch (const std::exception& e) {
+                // scoped_unlock will re-lock open_orders_lock in its destructor.
+                spdlog::error("Exception during cancelAllOrdersForSymbol called from enforceOpenOrderLimit: {}", e.what());
+                // Potentially rethrow or handle, but ensure lock is managed.
+                // For now, just log. The lock will be re-acquired.
+            }
+        } // Relocks open_orders_lock when scoped_unlock goes out of scope
+
         if (cancel_all_success) {
             spdlog::info("Circuit breaker: Successfully initiated cancelAllOrdersForSymbol for symbol {}", symbol_to_check);
         } else {
             spdlog::error("Circuit breaker: Failed to initiate cancelAllOrdersForSymbol for symbol {}", symbol_to_check);
-            // Critical failure - what to do? Maybe try individual cancels, or escalate.
         }
     } else {
-        // spdlog::debug("Open order count ({}) for symbol {} is within limit ({})", 
-        //               current_open_orders_for_symbol, symbol_to_check, MAX_OPEN_ORDERS);
+        // spdlog::debug("Open order count ({}) for symbol {} is within limit ({})",
+        // current_open_orders_for_symbol, symbol_to_check, MAX_OPEN_ORDERS);
     }
 }
 
-// Replace existing stub for setupOrderWebSocket
-void DefaultExecutionClient::setupOrderWebSocket() {
-    SPDLOG_CRITICAL("ENTERING setupOrderWebSocket IN EXEC_BRIDGE_CPP"); 
-    spdlog::info("setupOrderWebSocket: Called for symbol {}", trading_symbol_);
-    if (!client_) {
-        spdlog::error("setupOrderWebSocket: BackpackClient (client_) is null. Cannot proceed.");
-        return;
-    }
-
-    // Ensure this is only called once or handle reconnections appropriately
-    // For simplicity, this initial version assumes it's called once at startup.
-    // A more robust version would handle reconnect logic and resubscription.
-
-    ws_last_connection_attempt_ = std::chrono::steady_clock::now();
-
-    // Set up the callback for when the WebSocket client connects
-    client_->get_ws_client()->set_open_handler([this]() {
-        SPDLOG_CRITICAL("OPEN_HANDLER_CALLED in setupOrderWebSocket"); 
-        spdlog::info("Order WebSocket: Connected for symbol {}", trading_symbol_);
-        ws_connected_.store(true, std::memory_order_release);
-        ws_connection_healthy_.store(true, std::memory_order_release); // Assume healthy on connect
-
-        // Don't subscribe immediately - wait for authentication first
-        spdlog::info("Order WebSocket: Connection established, waiting for authentication before subscribing...");
-    });
-
-    // Set up authentication success callback
-    client_->get_ws_client()->set_message_handler([this](const std::string& msg_str) {
-        spdlog::debug("Order WebSocket Raw Message for symbol {}: {}", trading_symbol_, msg_str);
-        try {
-            nlohmann::json j = nlohmann::json::parse(msg_str);
-            if (j.contains("type") && j["type"].get<std::string>() == "authenticated") {
-                spdlog::info("Order WebSocket: Authentication successful for symbol {}", trading_symbol_);
-                
-                // Now subscribe to user orders for the specific trading_symbol_
-                SPDLOG_CRITICAL("ATTEMPTING_SDK_SUBSCRIBE_USER_ORDERS after authentication"); 
-                bool subscribed = client_->subscribe_user_orders(trading_symbol_, 
-                    [this](const backpack::Order& sdk_order) {
-                        this->processSdkOrderUpdate(sdk_order);
-                    }
-                );
-
-                if (subscribed) {
-                    spdlog::info("Order WebSocket: Successfully sent subscription request for user orders on symbol {}", trading_symbol_);
-                    ws_orders_subscribed_.store(true, std::memory_order_release);
-                    
-                    // After successful subscription, bootstrap the order cache to get current state.
-                    if (!bootstrap_in_progress_.exchange(true, std::memory_order_acq_rel)) {
-                        std::thread([this](){
-                            bootstrapOrderCache(); 
-                            bootstrap_in_progress_.store(false, std::memory_order_release);
-                        }).detach();
-                    } else {
-                        spdlog::warn("Order WebSocket: Bootstrap already in progress for symbol {}. Skipping redundant call.", trading_symbol_);
-                    }
-                } else {
-                    spdlog::error("Order WebSocket: Failed to send subscription request for user orders on symbol {}. Order tracking will be incomplete.", trading_symbol_);
-                    ws_orders_subscribed_.store(false, std::memory_order_release);
-                    ws_orders_initialized_.store(false, std::memory_order_release);
-                    ws_connection_healthy_.store(false, std::memory_order_release);
-                }
-            }
-        } catch (const std::exception& e) {
-            spdlog::debug("Order WebSocket: Failed to parse message as JSON or not an authentication message: {}", e.what());
-        }
-    });
-
-    // Set up the callback for when the WebSocket client fails to connect or disconnects
-    client_->get_ws_client()->set_fail_handler([this](const std::string& reason) {
-        spdlog::error("Order WebSocket: Connection failed or disconnected for symbol {}. Reason: {}", trading_symbol_, reason);
-        order_ws_error_handler_("Connection_Fail_Or_Disconnect"); // Call generic error handler
-    });
-
-    client_->get_ws_client()->set_close_handler([this]() { // Removed status and reason parameters
-        spdlog::warn("Order WebSocket: Closed for symbol {}. (SDK close_handler does not provide specific status/reason to this lambda)", trading_symbol_);
-        order_ws_error_handler_("Connection_Closed"); // Call generic error handler
-    });
-
-    // Set up a generic message handler for logging/debugging if needed (optional)
-    // NOTE: Commented out because we have an authentication-aware message handler above
-    // client_->get_ws_client()->set_message_handler([this](const std::string& msg_str) {
-    //     spdlog::info("Order WebSocket Raw Message for symbol {}: {}", trading_symbol_, msg_str);
-    // });
-
-    // Attempt to connect the WebSocket client (non-blocking)
-    // The actual connection happens on the WebSocketClient's internal thread.
-    try {
-        spdlog::info("Order WebSocket: Attempting to connect for symbol {}...", trading_symbol_);
-        SPDLOG_CRITICAL("ATTEMPTING client_->connect() in setupOrderWebSocket"); // Diagnostic
-        client_->connect(); // Connect to the general WebSocket endpoint
-    } catch (const std::exception& e) {
-        spdlog::error("Order WebSocket: Exception during client_->connect() for symbol {}: {}", trading_symbol_, e.what());
-        order_ws_error_handler_("Connect_Call_Exception");
-    }
-}
-
-// Stub for cancel_orders_by_model_id (was declared in header)
-int DefaultExecutionClient::cancel_orders_by_model_id(const std::string& symbol, const std::string& model_id_to_cancel) {
-    spdlog::info("cancel_orders_by_model_id: Attempting to cancel orders for symbol {}, model_id (clientId) {}", symbol, model_id_to_cancel);
-    std::vector<std::string> order_ids_to_cancel;
-    {
-        std::lock_guard<std::mutex> lock(openOrdersMutex_);
-        for (const auto& pair : openOrders_) {
-            if (pair.second.symbol == symbol && pair.second.clientId == model_id_to_cancel) {
-                order_ids_to_cancel.push_back(pair.second.orderId);
-            }
-        }
-    }
-
-    if (order_ids_to_cancel.empty()) {
-        spdlog::info("cancel_orders_by_model_id: No open orders found for symbol {} and clientId {}", symbol, model_id_to_cancel);
-        return 0;
-    }
-
-    int successfully_cancelled_count = 0;
-    for (const std::string& order_id : order_ids_to_cancel) {
-        spdlog::debug("cancel_orders_by_model_id: Requesting cancellation for orderId: {}", order_id);
-        if (cancelSingleOrder(order_id, symbol)) { // cancelSingleOrder sends the REST request
-            successfully_cancelled_count++;
-            // DO NOT remove from openOrders_ here. Let WebSocket updates handle that.
-        } else {
-            spdlog::warn("cancel_orders_by_model_id: Failed to send cancellation request for orderId: {}", order_id);
-        }
-    }
-    spdlog::info("cancel_orders_by_model_id: Sent {} cancellation requests for symbol {} and clientId {}", successfully_cancelled_count, symbol, model_id_to_cancel);
-    return successfully_cancelled_count; // Returns count of requests SENT, not confirmed cancellations.
-}
-
+// ... existing code ...
 void DefaultExecutionClient::processSdkOrderUpdate(const backpack::Order& sdk_order) {
     spdlog::info("[ProcessSdkOrderUpdate] Received WS update for OrderID: {}, ClientID: {}, Symbol: {}, Status: {}, Price: {}, Qty: {}, ExecQty: {}",
                  sdk_order.id, sdk_order.client_order_id, sdk_order.symbol, backpack::order_status_to_string(sdk_order.status),
@@ -2131,7 +2075,7 @@ void DefaultExecutionClient::processSdkOrderUpdate(const backpack::Order& sdk_or
         return;
     }
 
-    std::lock_guard<std::mutex> lock(openOrdersMutex_);
+    std::unique_lock<std::mutex> lock(openOrdersMutex_); // Use std::unique_lock
 
     const std::string& order_id = sdk_order.id;
     // Extract model_id from client_order_id for event logging
@@ -2150,7 +2094,7 @@ void DefaultExecutionClient::processSdkOrderUpdate(const backpack::Order& sdk_or
     switch (sdk_order.status) {
         case backpack::OrderStatus::NEW: {
             // ... existing NEW handling ...
-            enforceOpenOrderLimit(sdk_order.symbol);
+            enforceOpenOrderLimit(sdk_order.symbol, lock); // Pass the unique_lock
             // Added logging for new orders
             if (!model_id.empty()) {
                 std::string trade_id_for_logging;
@@ -2353,7 +2297,7 @@ void DefaultExecutionClient::processSdkOrderUpdate(const backpack::Order& sdk_or
             }
             // Call circuit breaker logic AFTER updating the map and BEFORE releasing the lock
             // Use the symbol from the SDK order update, as enforceOpenOrderLimit expects it.
-            enforceOpenOrderLimit(sdk_order.symbol);
+            enforceOpenOrderLimit(sdk_order.symbol, lock); // Pass the unique_lock
             break;
         }
         case backpack::OrderStatus::CANCELED:
@@ -2468,6 +2412,146 @@ void DefaultExecutionClient::log_stop_order_sent(
     log_trade_event(event);
 }
 
+// Replace existing stub for setupOrderWebSocket
+void DefaultExecutionClient::setupOrderWebSocket() {
+    SPDLOG_CRITICAL("ENTERING setupOrderWebSocket IN EXEC_BRIDGE_CPP"); 
+    spdlog::info("setupOrderWebSocket: Called for symbol {}", trading_symbol_);
+    if (!client_) {
+        spdlog::error("setupOrderWebSocket: BackpackClient (client_) is null. Cannot proceed.");
+        return;
+    }
+
+    ws_last_connection_attempt_ = std::chrono::steady_clock::now();
+
+    // Set up the callback for when the WebSocket client connects
+    client_->get_ws_client()->set_open_handler([this]() {
+        SPDLOG_CRITICAL("OPEN_HANDLER_CALLED in setupOrderWebSocket"); 
+        spdlog::info("Order WebSocket: Connected for symbol {}. Attempting subscriptions...", trading_symbol_);
+        ws_connected_.store(true, std::memory_order_release);
+        ws_connection_healthy_.store(true, std::memory_order_release); // Assume healthy on connect
+
+        SPDLOG_CRITICAL("=== WebSocket Open Handler Debug ===");
+        SPDLOG_CRITICAL("Connected: {}", ws_connected_.load());
+        SPDLOG_CRITICAL("Trading Symbol: {}", trading_symbol_);
+        SPDLOG_CRITICAL("About to call subscribe_user_orders...");
+
+        // Subscribe to user orders for the specific trading_symbol_
+        SPDLOG_INFO("Order WebSocket: Attempting to subscribe to user orders for symbol {}", trading_symbol_);
+        bool orders_subscribed = client_->subscribe_user_orders(trading_symbol_, 
+            [this](const backpack::Order& sdk_order) {
+                this->processSdkOrderUpdate(sdk_order);
+            }
+        );
+
+        SPDLOG_CRITICAL("subscribe_user_orders returned: {}", orders_subscribed);
+
+        if (orders_subscribed) {
+            spdlog::info("Order WebSocket: Successfully sent subscription request for user orders on symbol {}", trading_symbol_);
+            ws_orders_subscribed_.store(true, std::memory_order_release);
+            
+            if (!bootstrap_in_progress_.exchange(true, std::memory_order_acq_rel)) {
+                std::thread([this](){\
+                    bootstrapOrderCache(); \
+                    bootstrap_in_progress_.store(false, std::memory_order_release);\
+                }).detach();
+            } else {
+                spdlog::warn("Order WebSocket: Bootstrap already in progress for symbol {}. Skipping redundant call.", trading_symbol_);
+            }
+        } else {
+            spdlog::error("Order WebSocket: Failed to send subscription request for user orders on symbol {}. Order tracking will be incomplete.", trading_symbol_);
+            ws_orders_subscribed_.store(false, std::memory_order_release);
+            ws_orders_initialized_.store(false, std::memory_order_release); // Mark as not initialized
+            ws_connection_healthy_.store(false, std::memory_order_release);
+        }
+
+        // Subscribe to user trades (fills) - using symbol-less version for all account trades
+        SPDLOG_INFO("Order WebSocket: Attempting to subscribe to user trades (fills) for the account");
+        bool trades_subscribed = client_->subscribe_user_trades(
+            [this](const backpack::Trade& sdk_trade) {
+                this->onUserFill(sdk_trade);
+            }
+        );
+
+        SPDLOG_CRITICAL("subscribe_user_trades returned: {}", trades_subscribed);
+
+        if (trades_subscribed) {
+            spdlog::info("Order WebSocket: Successfully sent subscription request for user trades (fills)");
+        } else {
+            spdlog::error("Order WebSocket: Failed to send subscription request for user trades (fills). Fill data will be missing.");
+        }
+        
+        SPDLOG_CRITICAL("=== End WebSocket Open Handler ===");
+    });
+
+    client_->get_ws_client()->set_fail_handler([this](const std::string& reason) {
+        spdlog::error("Order WebSocket: Connection failed or disconnected for symbol {}. Reason: {}", trading_symbol_, reason);
+        order_ws_error_handler_("Connection_Fail_Or_Disconnect");
+    });
+
+    client_->get_ws_client()->set_close_handler([this]() { 
+        spdlog::warn("Order WebSocket: Closed for symbol {}. (SDK close_handler does not provide specific status/reason to this lambda)", trading_symbol_);
+        order_ws_error_handler_("Connection_Closed");
+    });
+
+    try {
+        spdlog::info("Order WebSocket: Attempting to connect for symbol {}...", trading_symbol_);
+        SPDLOG_CRITICAL("ATTEMPTING client_->connect() in setupOrderWebSocket");
+        client_->connect(); 
+    } catch (const std::exception& e) {
+        spdlog::error("Order WebSocket: Exception during client_->connect() for symbol {}: {} ", trading_symbol_, e.what()); // Corrected string literal
+        order_ws_error_handler_("Connect_Call_Exception");
+    }
+}
+
+// Stub for cancel_orders_by_model_id (was declared in header)
+int DefaultExecutionClient::cancel_orders_by_model_id(const std::string& symbol, const std::string& model_id_to_cancel) {
+    spdlog::info("cancel_orders_by_model_id: Attempting to cancel orders for symbol {}, model_id (clientId) {}", symbol, model_id_to_cancel);
+    std::vector<std::string> order_ids_to_cancel;
+    {
+        std::lock_guard<std::mutex> lock(openOrdersMutex_);
+        for (const auto& pair : openOrders_) {
+            if (pair.second.symbol == symbol && pair.second.clientId == model_id_to_cancel) {
+                order_ids_to_cancel.push_back(pair.second.orderId);
+            }
+        }
+    }
+
+    if (order_ids_to_cancel.empty()) {
+        spdlog::info("cancel_orders_by_model_id: No open orders found for symbol {} and clientId {}", symbol, model_id_to_cancel);
+        return 0;
+    }
+
+    int successfully_cancelled_count = 0;
+    for (const std::string& order_id : order_ids_to_cancel) {
+        spdlog::debug("cancel_orders_by_model_id: Requesting cancellation for orderId: {}", order_id);
+        if (cancelSingleOrder(order_id, symbol)) { // cancelSingleOrder sends the REST request
+            successfully_cancelled_count++;
+            // DO NOT remove from openOrders_ here. Let WebSocket updates handle that.
+        } else {
+            spdlog::warn("cancel_orders_by_model_id: Failed to send cancellation request for orderId: {}", order_id);
+        }
+    }
+    spdlog::info("cancel_orders_by_model_id: Sent {} cancellation requests for symbol {} and clientId {}", successfully_cancelled_count, symbol, model_id_to_cancel);
+    return successfully_cancelled_count; // Returns count of requests SENT, not confirmed cancellations.
+}
+
+// ... existing code ...
+
 // Closing namespace
 } // namespace bp
+
+void bp::DefaultExecutionClient::onUserFill(const backpack::Trade& sdk_trade) { // ENSURE bp:: namespace qualifier IS PRESENT
+    spdlog::info("[DefaultExecutionClient::onUserFill] Received user fill/trade for symbol {}: OrderID={}, TradeID={}, Side={}, Price={}, Quantity={}, Maker={}, Fee={} {}", 
+                 sdk_trade.symbol, 
+                 sdk_trade.orderId, 
+                 sdk_trade.id, 
+                 backpack::order_side_to_string(sdk_trade.side), 
+                 sdk_trade.price, 
+                 sdk_trade.quantity, 
+                 sdk_trade.is_maker, 
+                 sdk_trade.fee,      
+                 sdk_trade.fee_symbol 
+                 );
+    // TODO: Implement logic to update position, P&L, etc., based on this fill.
+}
 

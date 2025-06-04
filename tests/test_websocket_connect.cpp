@@ -108,10 +108,8 @@ int main(int argc, char *argv[]) {
         }
         spdlog::info("BackpackClient connection established (is_connected() is true).");
 
-        // Send a ping first
-        spdlog::info("Sending ping...");
-        client.ping();
-        // std::this_thread::sleep_for(std::chrono::seconds(2)); // Wait a bit for pong
+        // NOTE: Removed ping() call as we've removed the custom JSON ping mechanism
+        // Standard WebSocket ping/pong frames are handled automatically by the underlying library
 
         // Attempting to subscribe to user positions for the PERP symbol
         spdlog::info("Attempting to subscribe to user positions for WebSocket stream symbol: {}", trading_symbol_perp);
