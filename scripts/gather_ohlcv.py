@@ -23,7 +23,7 @@ import pandas as pd
 
 def main() -> None:
     exch_id = os.getenv("EXCHANGE_ID", "backpack")
-    symbol = os.getenv("TRADING_SYMBOL", "SOL_USDC_PERP")
+    symbol = os.getenv("TRADING_SYMBOL", "WIF_USDC_PERP")
     timeframe = os.getenv("TIMEFRAME", "1m")
     lookback_days = int(os.getenv("LOOKBACK_DAYS", "30"))
 

@@ -22,7 +22,7 @@ class WebSocketConfig(NamedTuple):
     url: str = os.getenv('WS_URL', 'wss://ws.backpack.exchange')
 
 class TradingConfig(NamedTuple):
-    symbol: str = os.getenv('TRADING__SYMBOL', 'SOL_USDC_PERP')
+    symbol: str = os.getenv('TRADING_SYMBOL', 'WIF_USDC_PERP')
     trade_memory_rows: int = int(os.getenv('TRADING__TRADE_MEMORY_ROWS', '10000'))
 
 class APIConfig(NamedTuple):

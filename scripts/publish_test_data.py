@@ -6,6 +6,7 @@ import asyncio
 import argparse
 import logging
 import signal
+import os
 from data_ingestion.redis_publisher import RedisPublisher
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Redis publisher with test data")
     parser.add_argument("--redis_host", default="localhost", help="Redis host")
     parser.add_argument("--redis_port", type=int, default=6970, help="Redis port")
-    parser.add_argument("--symbol", default="SOL_USDC_PERP", help="Trading symbol")
+    parser.add_argument("--symbol", default=os.getenv("TRADING_SYMBOL", "WIF_USDC_PERP"), help="Trading symbol")
     parser.add_argument("--base_price", type=float, default=100.0, help="Base price for test data")
     args = parser.parse_args()
 
