@@ -12,7 +12,7 @@ mkdir build
 cd build
 
 # Configure with CMake
-cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-13 ..
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=/usr/bin/c++ ..
 
 # Build
 make -j$(sysctl -n hw.ncpu) 

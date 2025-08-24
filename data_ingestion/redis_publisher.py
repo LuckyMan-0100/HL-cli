@@ -26,7 +26,7 @@ class RedisPublisher:
         reconnect_delay: float = 1.0,
         channel: str = "l1:quotes",
         test_channel: str = "l1:test",
-        symbol: str = "SOL_USDC_PERP",
+        symbol: str = os.getenv("TRADING_SYMBOL", "WIF_USDC_PERP"),
         ws_url: str = "wss://ws.backpack.exchange"
     ):
         # Allow environment overrides (REDIS_HOST / REDIS_PORT) for easy config

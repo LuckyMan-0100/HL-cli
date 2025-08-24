@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Dict, List, Optional
+import os
 
 import redis.asyncio as redis
 
@@ -57,7 +58,7 @@ class RedisQuoteClient:
         *,
         channel: str = MAIN_CHANNEL,
         test_channel: str = TEST_CHANNEL,
-        symbol: str = "SOL_USDC_PERP",
+        symbol: str = os.getenv("TRADING_SYMBOL", "WIF_USDC_PERP"),
         test_mode: bool = False,
     ) -> None:
         self.host             = host

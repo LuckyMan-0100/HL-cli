@@ -247,6 +247,32 @@ test_rest_position_query/fast:
 .PHONY : test_rest_position_query/fast
 
 #=============================================================================
+# Target rules for targets named sign_test
+
+# Build rule for target.
+sign_test: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 sign_test
+.PHONY : sign_test
+
+# fast build rule for target.
+sign_test/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/sign_test.dir/build.make CMakeFiles/sign_test.dir/build
+.PHONY : sign_test/fast
+
+#=============================================================================
+# Target rules for targets named balance_cli
+
+# Build rule for target.
+balance_cli: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 balance_cli
+.PHONY : balance_cli
+
+# fast build rule for target.
+balance_cli/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/balance_cli.dir/build.make CMakeFiles/balance_cli.dir/build
+.PHONY : balance_cli/fast
+
+#=============================================================================
 # Target rules for targets named hiredis
 
 # Build rule for target.
@@ -372,6 +398,30 @@ Users/penrose/HL-cli/tests/test_websocket_connect.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_websocket_connect.dir/build.make CMakeFiles/test_websocket_connect.dir/Users/penrose/HL-cli/tests/test_websocket_connect.cpp.s
 .PHONY : Users/penrose/HL-cli/tests/test_websocket_connect.cpp.s
 
+balance_cli.o: balance_cli.cpp.o
+.PHONY : balance_cli.o
+
+# target to build an object file
+balance_cli.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/balance_cli.dir/build.make CMakeFiles/balance_cli.dir/balance_cli.cpp.o
+.PHONY : balance_cli.cpp.o
+
+balance_cli.i: balance_cli.cpp.i
+.PHONY : balance_cli.i
+
+# target to preprocess a source file
+balance_cli.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/balance_cli.dir/build.make CMakeFiles/balance_cli.dir/balance_cli.cpp.i
+.PHONY : balance_cli.cpp.i
+
+balance_cli.s: balance_cli.cpp.s
+.PHONY : balance_cli.s
+
+# target to generate assembly for a file
+balance_cli.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/balance_cli.dir/build.make CMakeFiles/balance_cli.dir/balance_cli.cpp.s
+.PHONY : balance_cli.cpp.s
+
 exec_bridge.o: exec_bridge.cpp.o
 .PHONY : exec_bridge.o
 
@@ -492,6 +542,30 @@ risk_manager.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/exec_bridge_lib.dir/build.make CMakeFiles/exec_bridge_lib.dir/risk_manager.cpp.s
 .PHONY : risk_manager.cpp.s
 
+sign_test.o: sign_test.cpp.o
+.PHONY : sign_test.o
+
+# target to build an object file
+sign_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/sign_test.dir/build.make CMakeFiles/sign_test.dir/sign_test.cpp.o
+.PHONY : sign_test.cpp.o
+
+sign_test.i: sign_test.cpp.i
+.PHONY : sign_test.i
+
+# target to preprocess a source file
+sign_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/sign_test.dir/build.make CMakeFiles/sign_test.dir/sign_test.cpp.i
+.PHONY : sign_test.cpp.i
+
+sign_test.s: sign_test.cpp.s
+.PHONY : sign_test.s
+
+# target to generate assembly for a file
+sign_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/sign_test.dir/build.make CMakeFiles/sign_test.dir/sign_test.cpp.s
+.PHONY : sign_test.cpp.s
+
 test_exec.o: test_exec.cpp.o
 .PHONY : test_exec.o
 
@@ -531,12 +605,14 @@ help:
 	@echo "... package_source"
 	@echo "... rebuild_cache"
 	@echo "... backpack_sdk"
+	@echo "... balance_cli"
 	@echo "... cpp_exec_test"
 	@echo "... exec_bridge_lib"
 	@echo "... exec_bridge_main"
 	@echo "... hiredis"
 	@echo "... hiredis-test"
 	@echo "... redis++_static"
+	@echo "... sign_test"
 	@echo "... test_redis++"
 	@echo "... test_rest_position_query"
 	@echo "... test_websocket_connect"
@@ -547,6 +623,9 @@ help:
 	@echo "... Users/penrose/HL-cli/tests/test_websocket_connect.o"
 	@echo "... Users/penrose/HL-cli/tests/test_websocket_connect.i"
 	@echo "... Users/penrose/HL-cli/tests/test_websocket_connect.s"
+	@echo "... balance_cli.o"
+	@echo "... balance_cli.i"
+	@echo "... balance_cli.s"
 	@echo "... exec_bridge.o"
 	@echo "... exec_bridge.i"
 	@echo "... exec_bridge.s"
@@ -562,6 +641,9 @@ help:
 	@echo "... risk_manager.o"
 	@echo "... risk_manager.i"
 	@echo "... risk_manager.s"
+	@echo "... sign_test.o"
+	@echo "... sign_test.i"
+	@echo "... sign_test.s"
 	@echo "... test_exec.o"
 	@echo "... test_exec.i"
 	@echo "... test_exec.s"

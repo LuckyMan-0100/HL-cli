@@ -73,10 +73,6 @@ target_compile_definitions(exec_bridge_main PRIVATE SPDLOG_HEADER_ONLY FMT_HEADE
 add_executable(cpp_exec_test test_exec.cpp)
 target_compile_definitions(cpp_exec_test PRIVATE SPDLOG_HEADER_ONLY FMT_HEADER_ONLY)
 
-# Sweeper test executable
-add_executable(test_sweeper test_sweeper.cpp)
-target_compile_definitions(test_sweeper PRIVATE SPDLOG_HEADER_ONLY FMT_HEADER_ONLY)
-
 # WebSocket connect test
 add_executable(test_websocket_connect
     "${CMAKE_CURRENT_LIST_DIR}/../tests/test_websocket_connect.cpp"
@@ -156,13 +152,11 @@ target_link_libraries(exec_bridge_lib PUBLIC
 
 target_link_libraries(exec_bridge_main PRIVATE exec_bridge_lib)
 target_link_libraries(cpp_exec_test PRIVATE exec_bridge_lib)
-target_link_libraries(test_sweeper PRIVATE exec_bridge_lib)
 
 # Properties and definitions (simplified for brevity, ensure they are complete in actual file)
 set_target_properties(exec_bridge_lib PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 set_target_properties(exec_bridge_main PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 set_target_properties(cpp_exec_test PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
-set_target_properties(test_sweeper PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 set_target_properties(test_websocket_connect PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 
 target_compile_definitions(exec_bridge_lib PRIVATE WEBSOCKETPP_USE_BOOST_ASIO BOOST_ASIO_HAS_STD_CHRONO BOOST_ASIO_NO_DEPRECATED SPDLOG_HEADER_ONLY FMT_HEADER_ONLY)
@@ -171,7 +165,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(exec_bridge_lib PRIVATE -Wno-deprecated-declarations -Wall -Wextra -Wpedantic)
     target_compile_options(exec_bridge_main PRIVATE -Wno-deprecated-declarations -Wall -Wextra -Wpedantic)
     target_compile_options(cpp_exec_test PRIVATE -Wall -Wextra)
-    target_compile_options(test_sweeper PRIVATE -Wall -Wextra)
     target_compile_options(test_websocket_connect PRIVATE -Wall -Wextra)
 endif()
 
@@ -183,3 +176,9 @@ endif()
 # Cleanup of previously used variables, no longer needed as we directly use targets or specific include paths
 # unset(HIREDIS_INCLUDE_DIR)
 # unset(REDIS_PLUS_PLUS_INCLUDE_DIR)
+
+add_executable(sign_test sign_test.cpp)
+target_link_libraries(sign_test PRIVATE exec_bridge_lib)
+
+add_executable(balance_cli balance_cli.cpp)
+target_link_libraries(balance_cli PRIVATE exec_bridge_lib)

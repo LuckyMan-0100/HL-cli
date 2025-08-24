@@ -1,13 +1,20 @@
 {
-    "signal_id": "265eccc6-4cd0-4d26-919f-cc42c15d99ce",
-    "timestamp": 1749010446338,
+    "signal_id": "5f03f04f-7fc2-4606-9b97-ec309420a04b",
+    "timestamp": 1748126862116,
     "symbol": "SOL_USDC_PERP",
-    "signal_type": "buy",
-    "confidence": 0.6203,
+    "signal_type": "hold",
+    "confidence": 0.1,
     "order_quantity_config": {
         "type": "Market",
         "quantity_usd": null,
-        "quantity": "0.15"
+        "quantity": "0.01"
     },
-    "conditional_order_params": {}
+    "conditional_order_params": {},
+    "model_metadata": {
+        "model_type": "rule_based_enhanced",
+        "signal_score": 0.09083604768210964,
+        "rsi": 58.567611163878766,
+        "sma_ratio": 0.9891267939891603,
+        "size_imbalance": 0.25164758448726554
+    }
 }

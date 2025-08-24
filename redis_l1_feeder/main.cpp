@@ -4,6 +4,7 @@
 #include <thread>
 #include <iomanip>    // For std::fixed, std::setprecision
 #include <vector>     // For std::vector with curl buffer
+#include <cstdlib>
 
 #include <sw/redis++/redis++.h> // Assuming redis++ headers are accessible
 #include <nlohmann/json.hpp>   // Assuming nlohmann/json headers are accessible
@@ -13,8 +14,13 @@
 const std::string REDIS_HOST = "localhost";
 const int REDIS_PORT = 6379;
 const std::string L1_QUOTES_CHANNEL = "l1:quotes";
-const std::string SYMBOL = "SOL_USDC_PERP"; // Make sure this matches exec_bridge if it uses a fixed symbol internally
 const int FETCH_INTERVAL_MS = 1000; // Fetch new data every 1 second
+
+// Determine trading symbol from environment variable to keep feeder aligned with rest of stack
+const std::string SYMBOL = [](){
+    const char* env_sym = std::getenv("TRADING_SYMBOL");
+    return env_sym && *env_sym ? std::string(env_sym) : std::string("WIF_USDC_PERP");
+}();
 
 // Helper function for CURL response handling
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {

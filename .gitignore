@@ -225,3 +225,5 @@ backpack_data_service
 
 # Redis plus plus untracked content
 redis-plus-plus/ 
+signal.json
+tradelog.jsonl 

@@ -28,7 +28,7 @@ SRCDIR = data_ingestion cpp_exec
 # Gather all .cpp files in each source directory
 SOURCES := $(foreach dir,$(SRCDIR),$(wildcard $(dir)/*.cpp))
 # Exclude pybind, redis_client, and example/test entry-point files by default
-SOURCES := $(filter-out cpp_exec/pybind_module.cpp cpp_exec/redis_client.cpp cpp_exec/main.cpp cpp_exec/low_latency_predictor.cpp cpp_exec/test_exec.cpp, $(SOURCES))
+SOURCES := $(filter-out cpp_exec/pybind_module.cpp cpp_exec/redis_client.cpp cpp_exec/main.cpp cpp_exec/low_latency_predictor.cpp cpp_exec/test_exec.cpp cpp_exec/sign_test.cpp cpp_exec/balance_cli.cpp, $(SOURCES))
 # Python / pybind11 detection
 PY_INCLUDES := $(shell \
     python3 -m pybind11 --includes 2>/dev/null || \

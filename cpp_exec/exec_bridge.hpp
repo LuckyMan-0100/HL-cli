@@ -334,10 +334,10 @@ public:
     std::mutex openOrdersMutex_;
     static constexpr std::size_t MAX_OPEN_ORDERS = 150;
     static constexpr std::chrono::seconds MAX_ORDER_AGE = std::chrono::seconds(30);
-    static constexpr std::chrono::seconds SWEEP_INTERVAL = std::chrono::seconds(15);
+    static constexpr std::chrono::seconds SWEEP_INTERVAL = std::chrono::seconds(5);
     std::thread orderSweeperThread_;
     // Safety mechanism methods
-    void enforceOpenOrderLimit(const std::string& symbol_to_check_and_cancel, std::unique_lock<std::mutex>& open_orders_lock);
+    void enforceOpenOrderLimit(const std::string& symbol_to_check_and_cancel);
     void sweeperThreadLogic();
     bool cancelAllOrdersForSymbol(const std::string& symbol);
     bool cancelSingleOrder(const std::string& order_id, const std::string& symbol);
@@ -356,19 +356,9 @@ public:
     // WebSocket methods
     void bootstrapOrderCache();
     void processSdkOrderUpdate(const backpack::Order& sdk_order);
-    void onUserFill(const backpack::Trade& sdk_trade);
 
     void initialize_order_ws();
     void stop_order_ws();
-
-    // TEST METHOD - Public wrapper for testing execute_signed_request
-    nlohmann::json test_execute_signed_request(RestClass rest_class,
-                                              const std::string& method,
-                                              const std::string& endpoint,
-                                              const std::string& instruction,
-                                              const nlohmann::json& params) {
-        return execute_signed_request(rest_class, method, endpoint, instruction, params);
-    }
 
 private:
     // Redis pub/sub handling
@@ -401,6 +391,7 @@ private:
     void add_strategy_flags(json& params, const OrderFlags& flags) const;
     std::string build_signing_string(const std::string& instruction, const json& params) const;
     std::string sign_request(const std::string& signing_string) const;
+    long long get_server_time() const;
     json execute_signed_request(RestClass rest_class,
                               const std::string& http_method,
                               const std::string& endpoint,
@@ -408,6 +399,8 @@ private:
                               const json& params) const;
     // Helper for formatting quantity to minimum step size
     double format_quantity(double qty) const;
+    std::string format_quantity_string(double qty) const; // format as string obeying step/precision
+    std::string format_price_string(double price) const;   // helper obeying tick_size_
 
     // WebSocket error handler
     void order_ws_error_handler_(const std::string& error_code);
@@ -423,6 +416,7 @@ private:
     std::unique_ptr<RiskManager> risk_manager_;
     
     double tick_size_;
+    double qty_step_;
     double min_qty_;
     
     std::atomic<double> best_bid_{0.0};

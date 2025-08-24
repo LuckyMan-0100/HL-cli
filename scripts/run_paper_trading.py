@@ -11,7 +11,7 @@ from monitoring.metrics import start_metrics_server
 from strategy.main_loop import StrategyLoop
 import random
 from decimal import Decimal
-from src.data.memory_store import Kline, OrderBook, OrderBookLevel
+from data_ingestion.memory_store import Kline, OrderBook, OrderBookLevel
 import pandas as pd
 
 # Configure logging
@@ -40,13 +40,19 @@ from ml.inference.predictor import ModelPredictor
 import subprocess
 import dotenv 
 import time # Added for the sleep in _handle_signal
-import socket
-import redis
+import redis # Added for health monitoring
 # --- End New Imports ---
 
 # --- Define Paths for Executables ---
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
-L1_FEEDER_PATH = WORKSPACE_ROOT / "connectors" / "redis_l1_feeder" / "build" / "feeder"
+L1_FEEDER_PATH = WORKSPACE_ROOT / "redis_l1_feeder" / "build" / "feeder"
+# Updated to use advanced ML signal producer
+ADVANCED_ML_SIGNAL_PRODUCER_PATH = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__), "..", "scripts", "advanced_ml_signal_producer.py"
+    )
+)
+# Keep original as fallback
 ML_SIGNAL_PRODUCER_PATH = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__), "..", "scripts", "ml_signal_producer.py"
@@ -57,22 +63,24 @@ EXEC_BRIDGE_PATH = os.path.abspath(
         os.path.dirname(__file__), "..", "cpp_exec", "build", "exec_bridge_main"
     )
 )
-ORDER_MANAGEMENT_SERVICE_SCRIPT_PATH = os.path.abspath(
-    os.path.join(
-        os.path.dirname(__file__), "..", "scripts", "run_order_management.py"
-    )
-)
 ORCHESTRATOR_CONFIG_PATH = WORKSPACE_ROOT / "orchestrator_config.json"
 # --- End Define Paths ---
 
 class PaperTradingRunner:
-    def __init__(self, use_ml_model: bool = True, start_feeder: bool = True):
+    def __init__(self, use_ml_model: bool = True):
         self.output_dir = Path('paper_trading_results')
         self.output_dir.mkdir(exist_ok=True)
         
-        self.use_ml_model = use_ml_model  # run ML signal producer
-        self.start_feeder = start_feeder  # whether to spawn redis L1 feeder binary
+        self.use_ml_model = use_ml_model # This controls if ml_signal_producer is run
         self.processes = [] # To keep track of started subprocesses
+        
+        # Health monitoring
+        self.redis_client = None
+        self.last_redis_activity = None
+        self.l1_feeder_proc = None
+        self.ml_producer_proc = None
+        self.exec_bridge_proc = None
+        self.exec_bridge_env = None
 
         logger.info(f"PaperTradingRunner initialized. Orchestrating external processes.")
         logger.info(f"ML Signal Producer will be run: {self.use_ml_model}")
@@ -109,153 +117,94 @@ class PaperTradingRunner:
                 return
             dotenv.load_dotenv(env_path)
             api_key = os.getenv("BACKPACK_API_KEY")
-            api_secret = os.getenv("BACKPACK_API_SECRET")
+            logger.info(f"[DEBUG run_paper_trading.py] API Key selected: '{api_key}'")
+            # api_secret_b64 = os.getenv("BACKPACK_API_SECRET_B64") # Original line
             
             # ---- MANUAL .env PARSING FOR DIAGNOSIS ----
-            api_secret_manual = None
+            api_secret_b64_manual = None
             try:
                 with open(env_path, 'r') as f:
                     for line in f:
-                        if line.startswith("BACKPACK_API_SECRET="):
-                            api_secret_manual = line.strip().split('=', 1)[1]
-                            logger.info(f"[DEBUG run_paper_trading.py] Manually parsed API Secret: '{api_secret_manual}'")
+                        if line.startswith("BACKPACK_API_SECRET_B64="):
+                            api_secret_b64_manual = line.strip().split('=', 1)[1]
+                            logger.info(f"[DEBUG run_paper_trading.py] Manually parsed API Secret: '{api_secret_b64_manual}'")
                             break
             except Exception as e:
                 logger.error(f"[DEBUG run_paper_trading.py] Error manually parsing .env for secret: {e}")
-            api_secret = api_secret_manual or api_secret
-            logger.info(f"[DEBUG run_paper_trading.py] API Secret selected for use: '{api_secret}'")
+            
+            # Use the manually parsed secret if available, otherwise fall back to getenv (which was problematic)
+            api_secret_b64 = api_secret_b64_manual if api_secret_b64_manual else os.getenv("BACKPACK_API_SECRET_B64")
+            if not api_secret_b64:
+                # Fallback to BACKPACK_API_SECRET for legacy variable name
+                api_secret_b64 = os.getenv("BACKPACK_API_SECRET")
+            logger.info(f"[DEBUG run_paper_trading.py] API Secret selected for use: '{api_secret_b64}'")
             # ---- END MANUAL .env PARSING ----
             
             trading_symbol = os.getenv("TRADING_SYMBOL", "SOL_USDC")
 
-            if not api_key or not api_secret:
-                logger.error("BACKPACK_API_KEY or BACKPACK_API_SECRET not found in .env or environment. Exiting.")
+            if not api_key or not api_secret_b64:
+                logger.error("BACKPACK_API_KEY or BACKPACK_API_SECRET_B64 not found in .env or environment. Exiting.")
                 return
             # --- End Load Environment Variables ---
-
-            # --- Start Redis server process ---
-            # Check if Redis is already running on the target port
-            redis_host = os.getenv("REDIS_HOST", "127.0.0.1")
-            redis_port = int(os.getenv("REDIS_PORT", "6379"))
-            try:
-                sock = socket.create_connection((redis_host, redis_port), timeout=1)
-                logger.info(f"Detected Redis running at {redis_host}:{redis_port}, skipping startup")
-                sock.close()
-            except Exception:
-                # Not running, so start a new Redis server
-                redis_exec = os.getenv("REDIS_SERVER_PATH", "redis-server")
-                logger.info(f"Attempting to start Redis server: {redis_exec} on port {redis_port}")
-                try:
-                    redis_proc = subprocess.Popen(
-                        [redis_exec, "--port", str(redis_port)],
-                        cwd=WORKSPACE_ROOT,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE
-                    )
-                    self.processes.append(redis_proc)
-                    logger.info(f"Started Redis server (PID: {redis_proc.pid})")
-                    await asyncio.sleep(1)  # give Redis time to initialize
-                except Exception as e:
-                    logger.error(f"Failed to start Redis server: {e}")
 
             # --- Prepare Environment for exec_bridge ---
             exec_bridge_env = os.environ.copy()
             exec_bridge_env["BACKPACK_API_KEY"] = api_key
-            exec_bridge_env["BACKPACK_API_SECRET"] = api_secret
-            exec_bridge_env["BACKPACK_API_SECRET_B64"] = api_secret
+            exec_bridge_env["BACKPACK_API_SECRET_B64"] = api_secret_b64
             exec_bridge_env["TRADING_SYMBOL"] = trading_symbol
             current_dyld_path = os.getenv("DYLD_LIBRARY_PATH", "")
             additional_paths = "/opt/homebrew/lib:/usr/local/lib"
             exec_bridge_env["DYLD_LIBRARY_PATH"] = f"{additional_paths}:{current_dyld_path}" if current_dyld_path else additional_paths
             
+            # Store environment for health monitoring
+            self.exec_bridge_env = exec_bridge_env
+            
             # ---- ADDED DEBUG LOG ----
-            logger.info(f"[DEBUG run_paper_trading.py] API Secret being passed to exec_bridge_main: '{api_secret}'")
+            logger.info(f"[DEBUG run_paper_trading.py] API Secret being passed to exec_bridge_main: '{api_secret_b64}'")
             # ---- END DEBUG LOG ----
             
-            logger.info("Starting external components...")
+            logger.info("Starting L1 Feeder, ML Signal Producer (if enabled), and Execution Bridge...")
 
-            # --- Start L1 Feeder (optional) ---
-            if self.start_feeder:
-                logger.info(f"Attempting to start L1 Feeder: {L1_FEEDER_PATH}")
-                if not L1_FEEDER_PATH.exists():
-                    logger.warning("L1 feeder binary not found; skipping as --skip-feeder flag not set but file missing")
-                else:
-                    logs_dir = WORKSPACE_ROOT / "logs"
-                    logs_dir.mkdir(exist_ok=True)
-                    l1_log_path = logs_dir / "l1_feeder.log"
-                    l1_log_f = open(l1_log_path, "a", buffering=1)
-                    l1_feeder_proc = subprocess.Popen(
-                        [str(L1_FEEDER_PATH)],
-                        cwd=WORKSPACE_ROOT,
-                        env=exec_bridge_env,
-                        stdout=l1_log_f, stderr=subprocess.STDOUT
-                    )
-                    self.processes.append(l1_feeder_proc)
-                    self.l1_feeder_proc = l1_feeder_proc
-                    self._l1_last_restart = datetime.now()
-                    logger.info(f"Started L1 Feeder (PID: {l1_feeder_proc.pid})")
-
-                    # Set up Redis subscription for heartbeat monitoring
-                    try:
-                        # Use health_check_interval & TCP keepalive so the connection never idles out (Redis default timeout=600 s)
-                        self._l1_pubsub_client = redis.Redis(
-                            host=redis_host,
-                            port=redis_port,
-                            decode_responses=True,
-                            socket_keepalive=True,
-                            health_check_interval=30  # send PING every 30 s if idle
-                        )
-                        self._l1_pubsub = self._l1_pubsub_client.pubsub(ignore_subscribe_messages=True)
-                        self._l1_pubsub.subscribe("l1:quotes")
-                        self._l1_last_quote = datetime.now()
-                    except Exception as e:
-                        logger.error(f"Failed to subscribe to l1:quotes for heartbeat monitoring: {e}")
-            else:
-                logger.info("--skip-feeder flag set; not launching L1 Feeder binary.")
-            # --- End L1 Feeder ---
-
-            await asyncio.sleep(2) # Allow L1 feeder to initialize
-
-            # --- Start Order Management Service ---
-            logger.info(f"Attempting to start Order Management Service: {ORDER_MANAGEMENT_SERVICE_SCRIPT_PATH}")
-            oms_proc = subprocess.Popen(
-                [sys.executable, str(ORDER_MANAGEMENT_SERVICE_SCRIPT_PATH)],
+            # --- Start L1 Feeder ---
+            logger.info(f"Attempting to start L1 Feeder: {L1_FEEDER_PATH}")
+            l1_feeder_proc = subprocess.Popen(
+                [str(L1_FEEDER_PATH)],
                 cwd=WORKSPACE_ROOT,
-                stdout=subprocess.PIPE, # Keep OMS quiet for now
-                stderr=subprocess.PIPE  # Keep OMS quiet for now
+                env=exec_bridge_env, # Feeder might need DYLD_LIBRARY_PATH for its own dependencies
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE # Keep L1 feeder quiet for now
             )
-            self.processes.append(oms_proc)
-            logger.info(f"Started Order Management Service (PID: {oms_proc.pid})")
-            # --- End Start Order Management Service ---
+            self.processes.append(l1_feeder_proc)
+            self.l1_feeder_proc = l1_feeder_proc  # Store reference for health monitoring
+            logger.info(f"Started L1 Feeder (PID: {l1_feeder_proc.pid})")
+            # --- End Start L1 Feeder ---
 
-            await asyncio.sleep(2) # Allow OMS to initialize
+            await asyncio.sleep(2) 
 
-            # --- Start ML Signal Producer with supervision ---
-            self.ml_producer_proc = None  # Track separately for restarts
-            self._ml_last_start = datetime.min  # Timestamp of last start attempt
-
-            def start_ml_producer():
-                """Helper to (re)launch the ML producer and pipe logs to file."""
-                # Ensure logs directory exists
-                logs_dir = WORKSPACE_ROOT / "logs"
-                logs_dir.mkdir(exist_ok=True)
-                log_file_path = logs_dir / "ml_producer.log"
-                ml_log_f = open(log_file_path, "a", buffering=1)  # line-buffered
-                logger.info(f"Launching ML Signal Producer -> {ML_SIGNAL_PRODUCER_PATH}, logs: {log_file_path}")
-                proc = subprocess.Popen([
-                        sys.executable, str(ML_SIGNAL_PRODUCER_PATH)
-                    ],
-                    cwd=WORKSPACE_ROOT,
-                    stdout=ml_log_f,
-                    stderr=subprocess.STDOUT
-                )
-                self._ml_last_start = datetime.now()
-                return proc
-
-            if self.use_ml_model:
-                self.ml_producer_proc = start_ml_producer()
-                self.processes.append(self.ml_producer_proc)  # Still track for orderly shutdown
-            # --- End ML Signal Producer supervision setup ---
+            # --- Start ML Signal Producer ---
+            if self.use_ml_model: 
+                # Try advanced ML signal producer first, fallback to simple one
+                advanced_ml_available = Path(ADVANCED_ML_SIGNAL_PRODUCER_PATH).exists()
+                
+                if advanced_ml_available:
+                    logger.info(f"Starting Advanced ML Signal Producer: {ADVANCED_ML_SIGNAL_PRODUCER_PATH}")
+                    ml_producer_proc = subprocess.Popen(
+                        [sys.executable, str(ADVANCED_ML_SIGNAL_PRODUCER_PATH)], 
+                        cwd=WORKSPACE_ROOT,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    logger.info(f"Started Advanced ML Signal Producer (PID: {ml_producer_proc.pid})")
+                else:
+                    logger.info(f"Advanced ML not available, using fallback ML Signal Producer: {ML_SIGNAL_PRODUCER_PATH}")
+                    ml_producer_proc = subprocess.Popen(
+                        [sys.executable, str(ML_SIGNAL_PRODUCER_PATH)], 
+                        cwd=WORKSPACE_ROOT,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    logger.info(f"Started Fallback ML Signal Producer (PID: {ml_producer_proc.pid})")
+                
+                self.processes.append(ml_producer_proc)
+                self.ml_producer_proc = ml_producer_proc
+            # --- End Start ML Signal Producer ---
             
             await asyncio.sleep(2) 
 
@@ -263,20 +212,26 @@ class PaperTradingRunner:
             logger.info(f"Attempting to start Execution Bridge: {EXEC_BRIDGE_PATH}")
             exec_bridge_proc = subprocess.Popen(
                 [str(EXEC_BRIDGE_PATH)], 
-                cwd=Path(EXEC_BRIDGE_PATH).parent,  # Run from build directory where the .dylib is located
+                cwd=WORKSPACE_ROOT, 
                 env=exec_bridge_env
                 # stdout=subprocess.PIPE, stderr=subprocess.PIPE # Temporarily commented out for direct console output
             )
             self.processes.append(exec_bridge_proc)
+            self.exec_bridge_proc = exec_bridge_proc  # Store reference for health monitoring
             logger.info(f"Started Execution Bridge (PID: {exec_bridge_proc.pid})")
             # --- End Start Execution Bridge ---
             
             end_time = datetime.now() + timedelta(days=duration_days)
             logger.info(f"Paper trading orchestrator running until {end_time}. Monitoring subprocesses.")
             
+            # Initialize health monitoring
+            self.last_redis_activity = time.time()
+            health_check_counter = 0
+            
             # Main loop: keep orchestrator alive and check subprocess health
             while self.is_running and datetime.now() < end_time:
-                for i, proc in enumerate(list(self.processes)):
+                # Check subprocess health
+                for i, proc in enumerate(self.processes):
                     # For processes with piped stdout/stderr, you could optionally log their output here non-blockingly
                     # However, exec_bridge now prints directly to console.
                     if proc.poll() is not None: 
@@ -290,66 +245,18 @@ class PaperTradingRunner:
                                 logger.error(f"  Stderr from {proc.pid}:\n{stderr.decode(errors='replace')}")
                         self.is_running = False 
                         break
-
-                # Supervise ML producer separately: restart if crashed (but keep orchestrator alive)
-                if self.use_ml_model and self.ml_producer_proc and self.ml_producer_proc.poll() is not None:
-                    exit_code = self.ml_producer_proc.returncode
-                    logger.warning(f"ML Signal Producer exited with code {exit_code}; will attempt restart in 5s")
-                    # Throttle restarts to avoid rapid crash loops
-                    time_since_last = (datetime.now() - self._ml_last_start).total_seconds()
-                    if time_since_last < 60:
-                        await asyncio.sleep(60 - time_since_last)
-                    # Remove old proc from list
-                    if self.ml_producer_proc in self.processes:
-                        self.processes.remove(self.ml_producer_proc)
-                    self.ml_producer_proc = start_ml_producer()
-                    self.processes.append(self.ml_producer_proc)
-
+                        
+                # Health check every 10 seconds (every 2 iterations of 5-second sleep)
+                health_check_counter += 1
+                if health_check_counter % 2 == 0:
+                    if not self._check_l1_feeder_health():
+                        logger.error("L1 feeder health check failed, stopping orchestrator")
+                        self.is_running = False
+                        break
+                        
                 if not self.is_running:
                     break
-
-                # --- Heartbeat supervision for L1 feeder ---
-                if hasattr(self, "_l1_pubsub"):
-                    try:
-                        msg = self._l1_pubsub.get_message(timeout=0.01)
-                        if msg and msg["type"] == "message":
-                            self._l1_last_quote = datetime.now()
-                        # Periodic explicit ping every 5 minutes to make absolutely sure the connection stays open
-                        if not hasattr(self, "_last_redis_ping"):
-                            self._last_redis_ping = datetime.now()
-                        if (datetime.now() - self._last_redis_ping).total_seconds() > 300:
-                            try:
-                                self._l1_pubsub_client.ping()
-                                self._last_redis_ping = datetime.now()
-                            except Exception as e:
-                                logger.warning(f"Redis keep-alive ping failed: {e}")
-                    except Exception as e:
-                        logger.warning(f"Heartbeat redis get_message error: {e}")
-
-                    # If no quote for >45s, restart feeder (throttled to 2 min between restarts)
-                    if (datetime.now() - getattr(self, "_l1_last_quote", datetime.now())).total_seconds() > 45:
-                        since_restart = (datetime.now() - getattr(self, "_l1_last_restart", datetime.min)).total_seconds()
-                        if since_restart > 120:
-                            logger.warning("No L1 quotes for 45s – restarting feeder")
-                            if self.l1_feeder_proc and self.l1_feeder_proc.poll() is None:
-                                self.l1_feeder_proc.terminate()
-                                try:
-                                    self.l1_feeder_proc.wait(timeout=5)
-                                except Exception:
-                                    self.l1_feeder_proc.kill()
-                            # launch again
-                            logs_dir = WORKSPACE_ROOT / "logs"
-                            logs_dir.mkdir(exist_ok=True)
-                            l1_log_path = logs_dir / "l1_feeder.log"
-                            l1_log_f = open(l1_log_path, "a", buffering=1)
-                            l1_feeder_proc = subprocess.Popen([str(L1_FEEDER_PATH)], cwd=WORKSPACE_ROOT, env=exec_bridge_env,
-                                                              stdout=l1_log_f, stderr=subprocess.STDOUT)
-                            self.l1_feeder_proc = l1_feeder_proc
-                            self.processes.append(l1_feeder_proc)
-                            self._l1_last_restart = datetime.now()
-                            logger.info(f"Restarted L1 feeder (PID {l1_feeder_proc.pid})")
-
-                await asyncio.sleep(5)  
+                await asyncio.sleep(5)
                 
             logger.info("Paper trading duration ended or shutdown initiated.")
             
@@ -362,16 +269,87 @@ class PaperTradingRunner:
             self._handle_signal(signal.SIGTERM, None) 
             logger.info("Paper trading orchestrator shut down.")
             
+    def _check_l1_feeder_health(self):
+        """Check if L1 feeder is publishing data to Redis and restart if needed."""
+        try:
+            if not self.redis_client:
+                self.redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+            
+            # Check Redis queue length and info
+            queue_length = self.redis_client.llen('l1:quotes')
+            current_time = time.time()
+            
+            # Check if there's recent activity
+            if queue_length > 0:
+                # Data is being consumed, so L1 feeder is likely working
+                self.last_redis_activity = current_time
+                return True
+                
+            # If queue is empty, check how long since last activity
+            if self.last_redis_activity is None:
+                self.last_redis_activity = current_time
+                return True  # First check, give it time
+                
+            time_since_activity = current_time - self.last_redis_activity
+            
+            # If no activity for 30 seconds, consider L1 feeder stuck
+            if time_since_activity > 30:
+                logger.warning(f"L1 feeder appears stuck - no Redis activity for {time_since_activity:.1f} seconds")
+                return self._restart_l1_feeder()
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking L1 feeder health: {e}")
+            return False
+    
+    def _restart_l1_feeder(self):
+        """Restart the L1 feeder process."""
+        try:
+            logger.info("Attempting to restart L1 feeder...")
+            
+            # Kill existing L1 feeder if it exists
+            if self.l1_feeder_proc and self.l1_feeder_proc.poll() is None:
+                logger.info(f"Terminating existing L1 feeder (PID: {self.l1_feeder_proc.pid})")
+                self.l1_feeder_proc.terminate()
+                try:
+                    self.l1_feeder_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning("L1 feeder did not terminate gracefully, killing")
+                    self.l1_feeder_proc.kill()
+                    
+                # Remove from processes list
+                if self.l1_feeder_proc in self.processes:
+                    self.processes.remove(self.l1_feeder_proc)
+            
+            # Start new L1 feeder
+            logger.info(f"Starting new L1 feeder: {L1_FEEDER_PATH}")
+            self.l1_feeder_proc = subprocess.Popen(
+                [str(L1_FEEDER_PATH)],
+                cwd=WORKSPACE_ROOT,
+                env=self.exec_bridge_env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            self.processes.append(self.l1_feeder_proc)
+            logger.info(f"Restarted L1 Feeder (PID: {self.l1_feeder_proc.pid})")
+            
+            # Reset activity timer
+            self.last_redis_activity = time.time()
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to restart L1 feeder: {e}")
+            return False
 
 def main():
-    parser = argparse.ArgumentParser(description='Run paper trading simulation')
+    parser = argparse.ArgumentParser(description='Run paper trading test with C++ exec_bridge')
     parser.add_argument('--days', type=float, default=0.01, 
                         help='Duration in days to run paper trading')
-    parser.add_argument('--use-ml', action='store_true', help='Use ML model for signal generation')
-    parser.add_argument('--skip-feeder', action='store_true', help='Skip launching the L1 feeder binary')
+    parser.add_argument('--use-ml', action=argparse.BooleanOptionalAction, default=True, 
+                        help='Enable/Disable ML signal producer. Default: enabled.')
     args = parser.parse_args()
     
-    runner = PaperTradingRunner(use_ml_model=args.use_ml, start_feeder=not args.skip_feeder)
+    runner = PaperTradingRunner(use_ml_model=args.use_ml)
     
     try:
         asyncio.run(runner.run(duration_days=args.days))

@@ -1,0 +1,94 @@
+{
+  "ml_system": {
+    "enabled": true,
+    "model_type": "advanced_ml",
+    "model_path": "models/advanced_ml_model.pkl",
+    "retrain_interval_hours": 6,
+    "window_hours": 24,
+    "prediction_horizon_hours": 8
+  },
+  "predictor_settings": {
+    "min_confidence": 0.65,
+    "position_size": 0.01,
+    "max_position": 1.0,
+    "feature_history_length": 1000,
+    "signal_interval_seconds": 5
+  },
+  "performance_monitoring": {
+    "enabled": true,
+    "monitor_type": "advanced",
+    "export_interval_minutes": 30,
+    "health_check_interval_minutes": 10,
+    "metrics_retention_hours": 168
+  },
+  "feature_engineering": {
+    "use_advanced_features": true,
+    "feature_windows": [10, 20, 50, 100],
+    "technical_indicators": [
+      "sma", "ema", "rsi", "macd", "bollinger_bands", 
+      "volume_profile", "order_flow", "volatility"
+    ],
+    "drift_detection": {
+      "enabled": true,
+      "drift_threshold": 2.5,
+      "baseline_window": 100
+    }
+  },
+  "training_config": {
+    "lightgbm_params": {
+      "objective": "regression",
+      "metric": "rmse",
+      "boosting_type": "gbdt",
+      "n_estimators": 1500,
+      "learning_rate": 0.01,
+      "max_depth": 4,
+      "num_leaves": 12,
+      "min_child_samples": 30,
+      "subsample": 0.7,
+      "colsample_bytree": 0.7,
+      "reg_alpha": 0.01,
+      "reg_lambda": 0.01,
+      "verbose": -1,
+      "n_jobs": -1
+    },
+    "cross_validation": {
+      "n_splits": 5,
+      "purge_window_pct": 0.10,
+      "early_stopping_rounds": 50
+    },
+    "sample_weighting": {
+      "enabled": true,
+      "decay_factor": 0.01
+    }
+  },
+  "risk_management": {
+    "position_limits": {
+      "max_position_size": 1.0,
+      "max_daily_trades": 100,
+      "max_drawdown_pct": 0.15
+    },
+    "signal_filtering": {
+      "min_signal_strength": 0.1,
+      "confidence_threshold": 0.65,
+      "volatility_adjustment": true
+    }
+  },
+  "data_sources": {
+    "primary": "redis_l1_feed",
+    "backup": "rest_api",
+    "feature_store": "memory_store",
+    "model_store": "local_files"
+  },
+  "logging": {
+    "level": "INFO",
+    "ml_debug": false,
+    "performance_debug": true,
+    "feature_debug": false
+  },
+  "alerts": {
+    "model_health_threshold": 0.7,
+    "feature_drift_threshold": 3.0,
+    "performance_decline_threshold": -0.05,
+    "notification_channels": ["log", "file"]
+  }
+} 

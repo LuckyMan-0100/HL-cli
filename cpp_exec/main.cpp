@@ -80,6 +80,14 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // Redacted credential logging for verification
+        auto redact = [](const std::string &s){
+            if (s.size() <= 8) return std::string(s.size(), '*');
+            return s.substr(0, 4) + std::string("…") + s.substr(s.size() - 4);
+        };
+        spdlog::debug("Using API key: {}", redact(api_key));
+        spdlog::debug("Using API secret: {}", redact(api_secret_b64));
+
         spdlog::info("Initializing Execution Client for symbol: {}", symbol);
         // Explicitly pass the ML signal file path
         std::string signal_file = "/Users/penrose/HL-cli/signal.json";
