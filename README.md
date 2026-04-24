@@ -58,7 +58,7 @@ psql -d trading_data -
 5. Configure environment variables:
 ```bash
 cp .env.example .env
-
+# Edit .env with your Backpack API keys and database settings
 ```
 
 ## Usage
