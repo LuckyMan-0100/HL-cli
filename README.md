@@ -93,14 +93,7 @@ python monitoring/dashboard.py
 ## Project Structure
 
 ```
-HL-cli/
-├── config/                 # Configuration and settings
-├── cpp_exec/              # C++ execution engine
-├── data_ingestion/        # Market data collection
-├── ml/                    # Machine learning models
-├── monitoring/            # Performance tracking
-├── trading/              # Trading logic
-└── tests/                # Unit and integration tests
+
 ```
 
 ## Performance Metrics
