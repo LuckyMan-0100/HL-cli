@@ -4,10 +4,7 @@ A low-latency machine learning system for cryptocurrency trading, optimized for 
 
 ## Features
 
-### Data Pipeline
-- Real-time market data ingestion from Backpack Exchange
-- High-performance TimescaleDB storage for order book snapshots and trades
-- Efficient data sampling and feature calculation (<5ms latency)
+
 
 ### ML Model
 - LightGBM-based triclass classifier (long/short/neutral)
